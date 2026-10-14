@@ -31,6 +31,12 @@ public final class WifiReconnector {
     public static final int RESULT_OK = 0;
     public static final int RESULT_WIFI_OFF = 1;
     public static final int RESULT_LEGACY_FAILED = 2;
+    /**
+     * addNetwork() returned -1: on Android 10+ that means a configuration for this SSID already
+     * exists and belongs to someone else (typically the user saved it in Settings), so the app is
+     * not allowed to manage it. Only the system's own auto-join and our suggestion remain.
+     */
+    public static final int RESULT_LEGACY_BLOCKED = 3;
 
     private final Context ctx;
     private final WifiManager wm;
@@ -122,18 +128,18 @@ public final class WifiReconnector {
     public int connect(String ssid, boolean disconnectFirst) {
         if (!enableWifi()) return RESULT_WIFI_OFF;
 
-        boolean legacyOk = legacyConnect(ssid, disconnectFirst);
+        int legacy = legacyConnect(ssid, disconnectFirst);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ensureSuggestion(ssid);
         }
-        return legacyOk ? RESULT_OK : RESULT_LEGACY_FAILED;
+        return legacy;
     }
 
     // ---------------------------------------------------------------- legacy API (target 28)
 
     @SuppressWarnings("deprecation")
-    private boolean legacyConnect(String ssid, boolean disconnectFirst) {
-        if (wm == null) return false;
+    private int legacyConnect(String ssid, boolean disconnectFirst) {
+        if (wm == null) return RESULT_LEGACY_FAILED;
         try {
             int id = findConfiguredId(ssid);
             if (id < 0) {
@@ -144,8 +150,8 @@ public final class WifiReconnector {
                 cfg.priority = 999999;
                 id = wm.addNetwork(cfg);
                 Log.i(TAG, "addNetwork(" + ssid + ") -> " + id);
+                if (id < 0) return RESULT_LEGACY_BLOCKED;
             }
-            if (id < 0) return false;
 
             if (disconnectFirst) {
                 wm.disconnect();
@@ -153,10 +159,10 @@ public final class WifiReconnector {
             boolean enabled = wm.enableNetwork(id, true);
             boolean reconnect = wm.reconnect();
             Log.i(TAG, "enableNetwork=" + enabled + " reconnect=" + reconnect);
-            return enabled;
+            return enabled ? RESULT_OK : RESULT_LEGACY_FAILED;
         } catch (SecurityException e) {
             Log.w(TAG, "legacy connect denied", e);
-            return false;
+            return RESULT_LEGACY_FAILED;
         }
     }
 

@@ -11,7 +11,6 @@
     <string name="btn_permissions">Выдать разрешения</string>
     <string name="btn_background_location">Разрешить геолокацию «всегда»</string>
     <string name="btn_battery">Отключить оптимизацию батареи</string>
-    <string name="btn_save_network">Сохранить сеть в настройках Wi-Fi</string>
     <string name="btn_reconnect_now">Переподключить сейчас</string>
     <string name="btn_open_starlink">Открыть приложение Starlink</string>
 
@@ -38,7 +37,6 @@
     <string name="toast_starlink_missing">Приложение Starlink не установлено, открываю Play Store</string>
     <string name="toast_need_permissions">Сначала выдайте разрешение на геолокацию</string>
     <string name="toast_reconnect_sent">Запрос на переподключение отправлен</string>
-    <string name="toast_suggestion_result">Статус системной подсказки сети: %1$d</string>
 
     <string name="help_text">Как это работает: вотчдог живёт как foreground-сервис. Как только открытая сеть с указанным SSID появляется в зоне действия, а телефон к ней не подключён, приложение переподключается к ней и удерживает Wi-Fi, даже если Android считает, что интернета нет. Сразу после подключения оно отправляет команду перезагрузки терминалу Starlink через его локальный gRPC API (192.168.100.1:9200) — тот же вызов, что делает официальное приложение. Выдайте геолокацию (Android требует её для сканирования Wi-Fi), держите геолокацию включённой и отключите оптимизацию батареи, чтобы сервис не убивался в фоне.</string>
 
@@ -71,4 +69,6 @@
     <string name="check_no_wifi_network">Wi-Fi сеть не найдена, использован маршрут по умолчанию.</string>
     <string name="reboot_result_prefix">%1$s: %2$s</string>
     <string name="notif_action_reboot">Ребут Starlink</string>
+    <string name="btn_wifi_settings">Открыть настройки Wi-Fi</string>
+    <string name="status_legacy_blocked">%1$s в зоне действия, но Android не даёт приложению управлять ею: сеть уже сохранена в настройках Wi-Fi другим владельцем. Удалите («забыть») её там (кнопка «Открыть настройки Wi-Fi»), и приложение возьмёт её под контроль; пока используется системное автоподключение.</string>
 </resources>

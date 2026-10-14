@@ -82,6 +82,7 @@ public class ReconnectService extends Service {
     private boolean wasConnected;
     private boolean rebootPending;
     private boolean rebootInFlight;
+    private boolean legacyBlocked;
     private String lastNotificationText;
 
     // ------------------------------------------------------------------ static helpers
@@ -334,13 +335,16 @@ public class ReconnectService extends Service {
                     boolean disconnectFirst = onOtherWifi || (attempts % 3 == 0);
                     int r = reconnector.connect(ssid, disconnectFirst);
                     Log.i(TAG, "connect attempt #" + attempts + " -> " + r);
+                    legacyBlocked = r == WifiReconnector.RESULT_LEGACY_BLOCKED;
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
                             && now - lastSuggestionRefresh >= SUGGESTION_REFRESH_MS) {
                         lastSuggestionRefresh = now;
                         reconnector.refreshSuggestion(ssid);
                     }
                 }
-                update(getString(R.string.status_connecting, ssid));
+                update(legacyBlocked
+                        ? getString(R.string.status_legacy_blocked, ssid)
+                        : getString(R.string.status_connecting, ssid));
             }
             scheduleTick(5_000);
             return;

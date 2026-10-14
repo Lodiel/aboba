@@ -256,10 +256,10 @@
             android:text="@string/btn_battery" />
 
         <Button
-            android:id="@+id/btn_save_network"
+            android:id="@+id/btn_wifi_settings"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/btn_save_network" />
+            android:text="@string/btn_wifi_settings" />
 
         <TextView
             android:layout_width="match_parent"

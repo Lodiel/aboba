@@ -11,7 +11,6 @@
     <string name="btn_permissions">Надати дозволи</string>
     <string name="btn_background_location">Дозволити геолокацію «завжди»</string>
     <string name="btn_battery">Вимкнути оптимізацію батареї</string>
-    <string name="btn_save_network">Зберегти мережу в налаштуваннях Wi-Fi</string>
     <string name="btn_reconnect_now">Перепідключити зараз</string>
     <string name="btn_open_starlink">Відкрити застосунок Starlink</string>
 
@@ -38,7 +37,6 @@
     <string name="toast_starlink_missing">Застосунок Starlink не встановлено, відкриваю Play Store</string>
     <string name="toast_need_permissions">Спочатку надайте дозвіл на геолокацію</string>
     <string name="toast_reconnect_sent">Запит на перепідключення надіслано</string>
-    <string name="toast_suggestion_result">Статус системної підказки мережі: %1$d</string>
 
     <string name="help_text">Як це працює: вотчдог живе як foreground-сервіс. Щойно відкрита мережа із вказаним SSID з’являється в зоні дії, а телефон до неї не підключений, застосунок перепідключається до неї та утримує Wi-Fi, навіть якщо Android вважає, що інтернету немає. Одразу після підключення він надсилає команду перезавантаження терміналу Starlink через його локальний gRPC API (192.168.100.1:9200) — той самий виклик, що робить офіційний застосунок. Надайте геолокацію (Android вимагає її для сканування Wi-Fi), тримайте геолокацію увімкненою та вимкніть оптимізацію батареї, щоб сервіс не вбивався у фоні.</string>
 
@@ -71,4 +69,6 @@
     <string name="check_no_wifi_network">Wi-Fi мережу не знайдено, використано маршрут за замовчуванням.</string>
     <string name="reboot_result_prefix">%1$s: %2$s</string>
     <string name="notif_action_reboot">Ребут Starlink</string>
+    <string name="btn_wifi_settings">Відкрити налаштування Wi-Fi</string>
+    <string name="status_legacy_blocked">%1$s у зоні дії, але Android не дає застосунку керувати нею: мережу вже збережено в налаштуваннях Wi-Fi іншим власником. Видаліть («забути») її там (кнопка «Відкрити налаштування Wi-Fi»), і застосунок візьме її під контроль; поки що використовується системне автопідключення.</string>
 </resources>

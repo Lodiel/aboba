@@ -11,7 +11,6 @@
     <string name="btn_permissions">Grant permissions</string>
     <string name="btn_background_location">Allow location “all the time”</string>
     <string name="btn_battery">Disable battery optimisation</string>
-    <string name="btn_save_network">Save network in system Wi-Fi settings</string>
     <string name="btn_reconnect_now">Reconnect now</string>
     <string name="btn_open_starlink">Open Starlink app</string>
 
@@ -38,7 +37,6 @@
     <string name="toast_starlink_missing">Starlink app is not installed, opening Play Store</string>
     <string name="toast_need_permissions">Grant location permission first</string>
     <string name="toast_reconnect_sent">Reconnect requested</string>
-    <string name="toast_suggestion_result">System suggestion status: %1$d</string>
 
     <string name="help_text">How it works: the watchdog runs as a foreground service. Whenever the open network with the SSID above is in range and the phone is not connected to it, the app re-joins it and keeps Wi-Fi alive even if Android thinks it has no internet. Right after connecting it sends the reboot command to the Starlink terminal over its local gRPC API (192.168.100.1:9200), the same call the official app makes. Grant location (needed by Android to scan Wi-Fi), keep Location turned on, and exclude the app from battery optimisation so it survives in the background.</string>
 
@@ -71,4 +69,6 @@
     <string name="check_no_wifi_network">No Wi-Fi network found, used the default route.</string>
     <string name="reboot_result_prefix">%1$s: %2$s</string>
     <string name="notif_action_reboot">Reboot Starlink</string>
+    <string name="btn_wifi_settings">Open Wi-Fi settings</string>
+    <string name="status_legacy_blocked">%1$s is in range, but Android does not let the app manage it: the network is already saved in Wi-Fi settings by another owner. Forget it there (Open Wi-Fi settings) and the app will take over; until then the system auto-join is used.</string>
 </resources>

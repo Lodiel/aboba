@@ -6,7 +6,6 @@ import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
-import android.net.wifi.WifiNetworkSuggestion;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
@@ -21,7 +20,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.text.DateFormat;
-import java.util.ArrayList;
 import java.util.Date;
 
 public class MainActivity extends Activity implements StatusBus.Listener {
@@ -29,7 +27,6 @@ public class MainActivity extends Activity implements StatusBus.Listener {
 
     private static final int REQ_LOCATION = 1;
     private static final int REQ_BACKGROUND_LOCATION = 2;
-    private static final int REQ_SAVE_NETWORK = 3;
 
     private EditText editSsid;
     private Switch switchEnabled;
@@ -162,8 +159,8 @@ public class MainActivity extends Activity implements StatusBus.Listener {
         Button btnBattery = findViewById(R.id.btn_battery);
         btnBattery.setOnClickListener(v -> requestIgnoreBatteryOptimizations());
 
-        Button btnSaveNetwork = findViewById(R.id.btn_save_network);
-        btnSaveNetwork.setOnClickListener(v -> saveNetworkInSystem());
+        Button btnWifiSettings = findViewById(R.id.btn_wifi_settings);
+        btnWifiSettings.setOnClickListener(v -> openWifiSettings());
     }
 
     @Override
@@ -332,35 +329,11 @@ public class MainActivity extends Activity implements StatusBus.Listener {
         }
     }
 
-    private void saveNetworkInSystem() {
-        saveSsid();
-        String ssid = Prefs.ssid(this);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            ArrayList<WifiNetworkSuggestion> list = new ArrayList<>();
-            list.add(reconnector.buildSuggestion(ssid));
-            Intent i = new Intent(Settings.ACTION_WIFI_ADD_NETWORKS);
-            i.putParcelableArrayListExtra(Settings.EXTRA_WIFI_NETWORK_LIST, list);
-            try {
-                startActivityForResult(i, REQ_SAVE_NETWORK);
-                return;
-            } catch (ActivityNotFoundException ignored) {
-            }
-        }
-        if (!hasLocationPermission()) {
-            requestLocationPermission();
-            return;
-        }
-        int r = reconnector.connect(ssid, false);
-        int status = reconnector.ensureSuggestion(ssid);
-        Toast.makeText(this, getString(R.string.toast_suggestion_result, status >= 0 ? status : r),
-                Toast.LENGTH_SHORT).show();
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQ_SAVE_NETWORK) {
-            Toast.makeText(this, R.string.toast_saved, Toast.LENGTH_SHORT).show();
+    private void openWifiSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_WIFI_SETTINGS));
+        } catch (ActivityNotFoundException e) {
+            openAppSettings();
         }
     }
 
