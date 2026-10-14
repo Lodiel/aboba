@@ -49,19 +49,20 @@
 
 ## Сборка
 
-Требуется JDK 17 и Android SDK (compileSdk 34). Зависимостей нет — только
-платформенные API.
+Требуется JDK 17, Gradle 8.14+ и Android SDK (compileSdk 34). Зависимостей
+нет — только платформенные API.
 
 ```bash
-./gradlew assembleRelease
+gradle assembleRelease
 # app/build/outputs/apk/release/app-release.apk
 ```
 
 Сборку делает GitHub Actions (`.github/workflows/build-apk.yml`). APK
-подписывается ключом из `app/keystore/starlink-reconnect.jks`, который лежит в
-репозитории специально: так каждая CI-сборка подписана одним и тем же ключом,
-и новую версию можно ставить поверх старой без удаления. Ключ не секретный и
-годится только для сайдлоада.
+подписывается ключом из `app/keystore/starlink-reconnect.jks.base64` (Gradle
+декодирует его в `app/build/keystore/` при сборке). Ключ лежит в репозитории
+специально: так каждая CI-сборка подписана одним и тем же ключом, и новую
+версию можно ставить поверх старой без удаления. Ключ не секретный и годится
+только для сайдлоада.
 
 ## Ограничения
 

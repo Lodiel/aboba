@@ -11,3 +11,6 @@ build/
 local.properties
 # OS
 .DS_Store
+
+# Decoded at build time from app/keystore/*.base64
+app/keystore/*.jks

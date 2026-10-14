@@ -2,6 +2,15 @@ plugins {
     id("com.android.application")
 }
 
+val decodedKeystore: File = layout.buildDirectory.file("keystore/starlink-reconnect.jks").get().asFile.also { out ->
+    val encoded = file("keystore/starlink-reconnect.jks.base64").readText()
+    val bytes = java.util.Base64.getMimeDecoder().decode(encoded)
+    if (!out.exists() || !out.readBytes().contentEquals(bytes)) {
+        out.parentFile.mkdirs()
+        out.writeBytes(bytes)
+    }
+}
+
 android {
     namespace = "com.aboba.starlinkreconnect"
     compileSdk = 34
@@ -19,10 +28,11 @@ android {
     }
 
     signingConfigs {
-        // Shared keystore committed to the repo so every CI build is signed with
-        // the same key and the APK can be updated in place on the phone.
+        // Shared keystore committed to the repo (as base64 text, decoded below) so
+        // every CI build is signed with the same key and the APK can be updated in
+        // place on the phone.
         create("shared") {
-            storeFile = file("keystore/starlink-reconnect.jks")
+            storeFile = decodedKeystore
             storePassword = "starlink"
             keyAlias = "starlink"
             keyPassword = "starlink"
