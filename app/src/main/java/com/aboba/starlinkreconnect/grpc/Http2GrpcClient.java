@@ -70,6 +70,21 @@ public final class Http2GrpcClient {
         }
     }
 
+    /**
+     * Thrown for transport-level failures. {@link #requestSent} is true when the connection was
+     * established and the whole request was written before the failure: for a reboot command
+     * that usually means the device accepted it and dropped the link while restarting.
+     */
+    public static final class TransportException extends IOException {
+        private static final long serialVersionUID = 1L;
+        public final boolean requestSent;
+
+        TransportException(String message, boolean requestSent, Throwable cause) {
+            super(message, cause);
+            this.requestSent = requestSent;
+        }
+    }
+
     private Http2GrpcClient() {}
 
     /**
@@ -85,6 +100,7 @@ public final class Http2GrpcClient {
                                      byte[] body, int timeoutMs) throws IOException {
         long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
         SocketFactory sf = factory != null ? factory : SocketFactory.getDefault();
+        boolean requestSent = false;
         try (Socket socket = sf.createSocket()) {
             socket.setTcpNoDelay(true);
             socket.connect(new InetSocketAddress(host, port), timeoutMs);
@@ -124,8 +140,18 @@ public final class Http2GrpcClient {
 
             out.write(initial.toByteArray());
             out.flush();
+            requestSent = true;
 
             return readResponse(in, out, deadline);
+        } catch (TransportException e) {
+            throw e;
+        } catch (SocketTimeoutException e) {
+            throw new TransportException(requestSent ? "no response within " + timeoutMs + " ms"
+                    : "connect timed out after " + timeoutMs + " ms", requestSent, e);
+        } catch (IOException e) {
+            String m = e.getMessage();
+            throw new TransportException(e.getClass().getSimpleName() + (m == null ? "" : ": " + m),
+                    requestSent, e);
         }
     }
 
@@ -145,7 +171,7 @@ public final class Http2GrpcClient {
             try {
                 in.readFully(header);
             } catch (EOFException e) {
-                throw new IOException("connection closed before the response completed", e);
+                throw new TransportException("connection closed before the response completed", true, e);
             }
             int length = ((header[0] & 0xFF) << 16) | ((header[1] & 0xFF) << 8) | (header[2] & 0xFF);
             int type = header[3] & 0xFF;

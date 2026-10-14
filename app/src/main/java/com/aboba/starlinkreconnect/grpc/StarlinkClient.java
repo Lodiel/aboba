@@ -28,11 +28,11 @@ public final class StarlinkClient {
     // spacex.api.device.Response field numbers (oneof response).
     static final int RESPONSE_REBOOT = 1001;
     static final int RESPONSE_GET_DEVICE_INFO = 1004;
-    // GetDeviceInfoResponse.device_info = 1; DeviceInfo fields:
+    // GetDeviceInfoResponse.device_info = 1; DeviceInfo fields (spacex/api/device/common.proto).
     static final int DEVICE_INFO_ID = 1;
-    static final int DEVICE_INFO_HARDWARE_VERSION = 3;
-    static final int DEVICE_INFO_SOFTWARE_VERSION = 4;
-    static final int DEVICE_INFO_COUNTRY_CODE = 5;
+    static final int DEVICE_INFO_HARDWARE_VERSION = 2;
+    static final int DEVICE_INFO_SOFTWARE_VERSION = 3;
+    static final int DEVICE_INFO_COUNTRY_CODE = 4;
 
     /** Outcome of a command. */
     public static final class Result {
@@ -70,7 +70,11 @@ public final class StarlinkClient {
         return new StarlinkClient(sf, ROUTER_HOST, ROUTER_PORT, timeoutMs);
     }
 
-    /** Sends Request{reboot: RebootRequest{}}. */
+    /**
+     * Sends Request{reboot: RebootRequest{}}. A device that drops the connection right after the
+     * request was delivered is reported as success: the router in particular restarts before it
+     * manages to answer.
+     */
     public Result reboot() {
         byte[] body = new Proto.Writer().emptyMessage(REQUEST_REBOOT).toByteArray();
         try {
@@ -79,9 +83,47 @@ public final class StarlinkClient {
             if (r.isOk()) {
                 return new Result(true, "reboot accepted by " + host + ":" + port);
             }
-            return new Result(false, "reboot rejected by " + host + ":" + port + " (" + r + ")");
+            if (r.grpcStatus == GRPC_UNAVAILABLE && r.message == null && r.httpStatus == 200) {
+                return new Result(true, "reboot sent to " + host + ":" + port
+                        + ", device went away while answering (" + statusName(r.grpcStatus) + ")");
+            }
+            return new Result(false, "reboot rejected by " + host + ":" + port + ": "
+                    + statusName(r.grpcStatus) + (r.grpcMessage != null ? " - " + r.grpcMessage : ""));
+        } catch (Http2GrpcClient.TransportException e) {
+            if (e.requestSent && !(e.getCause() instanceof java.net.SocketTimeoutException)) {
+                return new Result(true, "reboot sent to " + host + ":" + port
+                        + ", connection dropped before the reply (device restarting): " + e.getMessage());
+            }
+            return new Result(false, host + ":" + port + " unreachable: " + e.getMessage());
         } catch (IOException e) {
             return new Result(false, host + ":" + port + " unreachable: " + describe(e));
+        }
+    }
+
+    static final int GRPC_UNAVAILABLE = 14;
+
+    /** Human-readable gRPC status code names (https://grpc.io/docs/guides/status-codes/). */
+    static String statusName(int code) {
+        switch (code) {
+            case 0: return "OK";
+            case 1: return "CANCELLED";
+            case 2: return "UNKNOWN";
+            case 3: return "INVALID_ARGUMENT";
+            case 4: return "DEADLINE_EXCEEDED";
+            case 5: return "NOT_FOUND";
+            case 6: return "ALREADY_EXISTS";
+            case 7: return "PERMISSION_DENIED (firmware refuses this command)";
+            case 8: return "RESOURCE_EXHAUSTED";
+            case 9: return "FAILED_PRECONDITION";
+            case 10: return "ABORTED";
+            case 11: return "OUT_OF_RANGE";
+            case 12: return "UNIMPLEMENTED (not supported by this device/firmware)";
+            case 13: return "INTERNAL";
+            case 14: return "UNAVAILABLE";
+            case 15: return "DATA_LOSS";
+            case 16: return "UNAUTHENTICATED";
+            case -1: return "no grpc-status in reply";
+            default: return "status " + code;
         }
     }
 
@@ -92,7 +134,8 @@ public final class StarlinkClient {
             Http2GrpcClient.Response r = Http2GrpcClient.unaryCall(socketFactory, host, port,
                     HANDLE_PATH, body, timeoutMs);
             if (!r.isOk()) {
-                return new Result(false, host + ":" + port + " answered " + r);
+                return new Result(false, host + ":" + port + " answered " + statusName(r.grpcStatus)
+                        + (r.grpcMessage != null ? " - " + r.grpcMessage : ""));
             }
             if (r.message == null || r.messageCompressed) {
                 return new Result(true, host + ":" + port + " reachable (no readable device info)");
