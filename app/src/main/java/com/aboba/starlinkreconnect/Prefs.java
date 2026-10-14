@@ -129,20 +129,52 @@ public final class Prefs {
         sp(c).edit().putString(KEY_ROUTER_ADDR, normalizeAddr(addr, DEFAULT_ROUTER_ADDR)).apply();
     }
 
-    public static long lastRebootAt(Context c) {
-        return sp(c).getLong(KEY_LAST_REBOOT_AT, 0L);
+    /** Marks "a reboot command was delivered now" (arms the cooldown). */
+    public static void markRebootSent(Context c) {
+        sp(c).edit()
+                .putLong(KEY_LAST_REBOOT_AT, System.currentTimeMillis())
+                .putLong(KEY_LAST_REBOOT_AT + "_elapsed", android.os.SystemClock.elapsedRealtime())
+                .apply();
     }
 
-    public static void setLastRebootAt(Context c, long millis) {
-        sp(c).edit().putLong(KEY_LAST_REBOOT_AT, millis).apply();
+    /** Marks "a reboot attempt finished now" (arms the shorter attempt gap). */
+    public static void markRebootAttempt(Context c) {
+        sp(c).edit()
+                .putLong(KEY_LAST_REBOOT_ATTEMPT_AT, System.currentTimeMillis())
+                .putLong(KEY_LAST_REBOOT_ATTEMPT_AT + "_elapsed", android.os.SystemClock.elapsedRealtime())
+                .apply();
     }
 
-    public static long lastRebootAttemptAt(Context c) {
-        return sp(c).getLong(KEY_LAST_REBOOT_ATTEMPT_AT, 0L);
+    /** Milliseconds since the last delivered reboot, or Long.MAX_VALUE when there was none. */
+    public static long sinceLastReboot(Context c) {
+        return since(c, KEY_LAST_REBOOT_AT);
     }
 
-    public static void setLastRebootAttemptAt(Context c, long millis) {
-        sp(c).edit().putLong(KEY_LAST_REBOOT_ATTEMPT_AT, millis).apply();
+    public static long sinceLastRebootAttempt(Context c) {
+        return since(c, KEY_LAST_REBOOT_ATTEMPT_AT);
+    }
+
+    /**
+     * Prefers the monotonic clock while still in the same boot; falls back to wall-clock time
+     * after a reboot, treating a clock that moved backwards as "just happened" (never as expired).
+     */
+    private static long since(Context c, String key) {
+        SharedPreferences p = sp(c);
+        long wall = p.getLong(key, 0L);
+        if (wall == 0L) return Long.MAX_VALUE;
+        long elapsed = p.getLong(key + "_elapsed", -1L);
+        long nowElapsed = android.os.SystemClock.elapsedRealtime();
+        if (elapsed >= 0 && elapsed <= nowElapsed) return nowElapsed - elapsed;
+        long delta = System.currentTimeMillis() - wall;
+        return delta < 0 ? 0 : delta;
+    }
+
+    public static int consecutiveRebootFailures(Context c) {
+        return sp(c).getInt("reboot_failures", 0);
+    }
+
+    public static void setConsecutiveRebootFailures(Context c, int n) {
+        sp(c).edit().putInt("reboot_failures", Math.max(0, n)).apply();
     }
 
     public static String lastRebootResult(Context c) {

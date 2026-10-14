@@ -33,9 +33,10 @@ import java.util.Date;
 /**
  * Foreground "watchdog" service. Every few seconds (and on every Wi-Fi state / scan broadcast)
  * it checks whether the phone is connected to the target SSID; if the network is in range and
- * the phone is not on it, it forces a (re)connection. Once connected it sends the Starlink
- * reboot command over the local gRPC API (with a delay, retries and a cooldown so that a router
- * reboot, which drops the Wi-Fi, does not trigger an endless reboot loop).
+ * the phone is not on it, it forces a (re)connection. On an observed not-connected -> connected
+ * transition it sends the Starlink reboot command over the local gRPC API (after a delay, with
+ * retries, a cooldown and a back-off so that a router reboot, which drops the Wi-Fi, cannot
+ * turn into an endless reboot loop).
  *
  * It also holds a {@link NetworkRequest} for TRANSPORT_WIFI so that Android keeps the Wi-Fi
  * link up even when it decides the network has "no internet" (typical for Starlink while the
@@ -48,6 +49,7 @@ public class ReconnectService extends Service {
     public static final String ACTION_STOP = "com.aboba.starlinkreconnect.STOP";
     public static final String ACTION_RECONNECT_NOW = "com.aboba.starlinkreconnect.RECONNECT_NOW";
     public static final String ACTION_REBOOT_STARLINK_NOW = "com.aboba.starlinkreconnect.REBOOT_STARLINK_NOW";
+    static final String EXTRA_FROM_BACKGROUND = "from_background";
 
     static final String CHANNEL_SERVICE = "watchdog";
     static final String CHANNEL_EVENTS = "events";
@@ -57,11 +59,16 @@ public class ReconnectService extends Service {
 
     private static final long TICK_MS = 15_000L;
     private static final long ATTEMPT_MIN_INTERVAL_MS = 20_000L;
+    private static final int ATTEMPT_BACKOFF_MAX_SHIFT = 4; // 20 s .. 320 s between attempts
     private static final long SCAN_MIN_INTERVAL_MS = 60_000L;
     private static final long SUGGESTION_REFRESH_MS = 5 * 60_000L;
-    /** Never fire two automatic reboot attempts closer than this, even when the first failed. */
-    private static final long MIN_REBOOT_ATTEMPT_GAP_MS = 60_000L;
+    /** Automatic reboot attempts are never closer than this (measured from the end of the last one). */
+    private static final long MIN_REBOOT_ATTEMPT_GAP_MS = 2 * 60_000L;
+    /** After this many failed automatic attempts in a row, pause for the full cooldown. */
+    private static final int REBOOT_FAILURE_BACKOFF_AFTER = 3;
+    private static final int REBOOT_WAIT_NETWORK_TRIES = 10; // x 3 s
 
+    /** Whether any instance is alive; for the activity's display logic only. */
     public static volatile boolean running = false;
 
     private Handler handler;
@@ -75,20 +82,30 @@ public class ReconnectService extends Service {
     private final Runnable tickRunnable = this::tick;
     private final Runnable rebootRunnable = this::runScheduledReboot;
 
-    private long lastAttempt;
-    private long lastScan;
-    private long lastSuggestionRefresh;
-    private int attempts;
+    private volatile boolean destroyed;
+    private boolean seeded;
     private boolean wasConnected;
     private boolean rebootPending;
     private boolean rebootInFlight;
     private boolean legacyBlocked;
+    private boolean startedFromBackground;
+    private int rebootWaitNetworkTries;
+    private int consecutiveConnectFailures;
+    private long lastAttempt;
+    private long lastScan;
+    private long lastSuggestionRefresh;
+    private int attempts;
     private String lastNotificationText;
 
     // ------------------------------------------------------------------ static helpers
 
     public static void start(Context context) {
-        send(context, ACTION_START);
+        send(context, ACTION_START, false);
+    }
+
+    /** Start from a receiver (boot / package replaced): no visible activity is involved. */
+    public static void startFromBackground(Context context) {
+        send(context, ACTION_START, true);
     }
 
     public static void stop(Context context) {
@@ -97,16 +114,17 @@ public class ReconnectService extends Service {
     }
 
     public static void reconnectNow(Context context) {
-        send(context, ACTION_RECONNECT_NOW);
+        send(context, ACTION_RECONNECT_NOW, false);
     }
 
     public static void rebootStarlinkNow(Context context) {
-        send(context, ACTION_REBOOT_STARLINK_NOW);
+        send(context, ACTION_REBOOT_STARLINK_NOW, false);
     }
 
-    private static void send(Context context, String action) {
+    private static void send(Context context, String action, boolean fromBackground) {
         Context app = context.getApplicationContext();
-        Intent i = new Intent(app, ReconnectService.class).setAction(action);
+        Intent i = new Intent(app, ReconnectService.class).setAction(action)
+                .putExtra(EXTRA_FROM_BACKGROUND, fromBackground);
         try {
             app.startForegroundService(i);
         } catch (RuntimeException e) {
@@ -168,6 +186,17 @@ public class ReconnectService extends Service {
         startForeground(NOTIF_ID, buildNotification(
                 lastNotificationText != null ? lastNotificationText : getString(R.string.status_starting)));
         String action = intent == null ? null : intent.getAction();
+        if (intent != null && intent.hasExtra(EXTRA_FROM_BACKGROUND)) {
+            boolean background = intent.getBooleanExtra(EXTRA_FROM_BACKGROUND, false);
+            if (background) {
+                // Without background location, an FGS started from a receiver gets no location
+                // access on Android 11+, i.e. no scan results. A later start from the activity
+                // (which always re-sends START) repairs that, so remember to hint the user.
+                startedFromBackground = !hasBackgroundLocation();
+            } else {
+                startedFromBackground = false;
+            }
+        }
         if (ACTION_STOP.equals(action)) {
             Prefs.setEnabled(this, false);
             stopForeground(Service.STOP_FOREGROUND_REMOVE);
@@ -177,6 +206,7 @@ public class ReconnectService extends Service {
         if (ACTION_RECONNECT_NOW.equals(action)) {
             lastAttempt = 0;
             attempts = 0;
+            consecutiveConnectFailures = 0;
             String ssid = Prefs.ssid(this);
             reconnector.connect(ssid, true);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -188,9 +218,8 @@ public class ReconnectService extends Service {
             return START_STICKY;
         }
         if (ACTION_REBOOT_STARLINK_NOW.equals(action)) {
-            handler.removeCallbacks(rebootRunnable);
-            rebootPending = false;
-            startReboot();
+            cancelPendingReboot();
+            startReboot(true);
             return START_STICKY;
         }
         scheduleTick(0);
@@ -199,6 +228,7 @@ public class ReconnectService extends Service {
 
     @Override
     public void onDestroy() {
+        destroyed = true;
         running = false;
         handler.removeCallbacksAndMessages(null);
         if (wifiReceiver != null) {
@@ -254,13 +284,13 @@ public class ReconnectService extends Service {
             @Override
             public void onAvailable(Network network) {
                 wifiNetwork = network;
-                scheduleTick(1_000);
+                scheduleTick(500);
             }
 
             @Override
             public void onLost(Network network) {
                 if (network.equals(wifiNetwork)) wifiNetwork = null;
-                scheduleTick(1_000);
+                scheduleTick(500);
             }
         };
         try {
@@ -272,14 +302,22 @@ public class ReconnectService extends Service {
     }
 
     private void scheduleTick(long delayMs) {
-        if (handler == null) return;
+        if (handler == null || destroyed) return;
         handler.removeCallbacks(tickRunnable);
         handler.postDelayed(tickRunnable, delayMs);
+    }
+
+    /** The Wi-Fi Network object (from the callback, else looked up), or null while not up. */
+    private Network currentWifiNetwork() {
+        Network n = wifiNetwork;
+        if (n != null && StarlinkCommands.isWifi(cm, n)) return n;
+        return StarlinkCommands.findWifiNetwork(this);
     }
 
     // ------------------------------------------------------------------ core loop
 
     private void tick() {
+        if (destroyed) return;
         String ssid = Prefs.ssid(this);
 
         if (!hasLocationPermission()) {
@@ -296,10 +334,27 @@ public class ReconnectService extends Service {
         }
 
         String current = reconnector.currentSsid();
-        if (ssid.equals(current)) {
+        boolean associated = ssid.equals(current);
+        boolean linkUp = associated && currentWifiNetwork() != null;
+
+        if (!seeded) {
+            // First evaluation after a (re)start: take the current state as the baseline instead
+            // of treating "already connected" as a fresh connection (which would reboot the dish
+            // on every app update, phone reboot or process restart).
+            seeded = true;
+            wasConnected = linkUp;
+            if (linkUp) {
+                update(getString(R.string.status_connected, ssid));
+                scheduleTick(TICK_MS);
+                return;
+            }
+        }
+
+        if (linkUp) {
             if (!wasConnected) {
                 wasConnected = true;
                 attempts = 0;
+                consecutiveConnectFailures = 0;
                 onConnected(ssid);
             }
             if (rebootInFlight) {
@@ -310,42 +365,59 @@ public class ReconnectService extends Service {
             scheduleTick(TICK_MS);
             return;
         }
+
+        if (associated) {
+            // L2 is up, IP provisioning still pending: not connected yet, but no need to push.
+            update(getString(R.string.status_associating, ssid));
+            scheduleTick(2_000);
+            return;
+        }
+
         if (wasConnected) {
             wasConnected = false;
-            if (rebootPending) {
-                // Lost the network before the delayed reboot fired: do not send it blindly.
-                handler.removeCallbacks(rebootRunnable);
-                rebootPending = false;
-            }
+            // Lost the network before a delayed reboot fired: do not send it blindly.
+            cancelPendingReboot();
         }
 
         long now = SystemClock.elapsedRealtime();
         ScanResult visible = reconnector.findVisible(ssid);
 
         if (visible != null) {
+            if (!WifiReconnector.isOpen(visible)) {
+                update(getString(R.string.status_secured, ssid));
+                scheduleTick(TICK_MS);
+                return;
+            }
             boolean onOtherWifi = current != null;
             if (onOtherWifi && !Prefs.forceSwitch(this)) {
-                update(getString(R.string.status_not_visible, ssid, current));
-            } else {
-                if (now - lastAttempt >= ATTEMPT_MIN_INTERVAL_MS) {
-                    lastAttempt = now;
-                    attempts++;
-                    // Every third attempt (or when sitting on a different network) drop the
-                    // current association first so the supplicant really re-associates.
-                    boolean disconnectFirst = onOtherWifi || (attempts % 3 == 0);
-                    int r = reconnector.connect(ssid, disconnectFirst);
-                    Log.i(TAG, "connect attempt #" + attempts + " -> " + r);
-                    legacyBlocked = r == WifiReconnector.RESULT_LEGACY_BLOCKED;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                            && now - lastSuggestionRefresh >= SUGGESTION_REFRESH_MS) {
-                        lastSuggestionRefresh = now;
-                        reconnector.refreshSuggestion(ssid);
-                    }
-                }
-                update(legacyBlocked
-                        ? getString(R.string.status_legacy_blocked, ssid)
-                        : getString(R.string.status_connecting, ssid));
+                update(getString(R.string.status_staying, ssid, current));
+                scheduleTick(TICK_MS);
+                return;
             }
+            long interval = ATTEMPT_MIN_INTERVAL_MS
+                    << Math.min(consecutiveConnectFailures, ATTEMPT_BACKOFF_MAX_SHIFT);
+            if (now - lastAttempt >= interval) {
+                lastAttempt = now;
+                attempts++;
+                // Drop the current association first when sitting on another network (but stop
+                // kicking the user off a working network after repeated failures) and on every
+                // third attempt so the supplicant really re-associates.
+                boolean disconnectFirst = onOtherWifi
+                        ? consecutiveConnectFailures < REBOOT_FAILURE_BACKOFF_AFTER
+                        : (attempts % 3 == 0);
+                int r = reconnector.connect(ssid, disconnectFirst);
+                Log.i(TAG, "connect attempt #" + attempts + " -> " + r);
+                legacyBlocked = r == WifiReconnector.RESULT_LEGACY_BLOCKED;
+                consecutiveConnectFailures++;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        && now - lastSuggestionRefresh >= SUGGESTION_REFRESH_MS) {
+                    lastSuggestionRefresh = now;
+                    reconnector.refreshSuggestion(ssid);
+                }
+            }
+            update(legacyBlocked
+                    ? getString(R.string.status_legacy_blocked, ssid)
+                    : getString(R.string.status_connecting, ssid));
             scheduleTick(5_000);
             return;
         }
@@ -356,6 +428,8 @@ public class ReconnectService extends Service {
         }
         if (!isLocationEnabled()) {
             update(getString(R.string.status_location_off));
+        } else if (startedFromBackground && current == null) {
+            update(getString(R.string.status_needs_foreground));
         } else {
             String cur = current != null ? current : getString(R.string.status_none);
             update(getString(R.string.status_not_visible, ssid, cur));
@@ -388,30 +462,38 @@ public class ReconnectService extends Service {
         }
         if (rebootPending || rebootInFlight) return;
 
-        long now = System.currentTimeMillis();
         long cooldownMs = Prefs.rebootCooldownMin(this) * 60_000L;
-        long sinceLast = now - Prefs.lastRebootAt(this);
-        if (sinceLast >= 0 && sinceLast < cooldownMs) {
+        long sinceLast = Prefs.sinceLastReboot(this);
+        if (sinceLast < cooldownMs) {
             long minutesLeft = (cooldownMs - sinceLast + 59_999L) / 60_000L;
             StatusBus.postReboot(getString(R.string.status_reboot_cooldown, minutesLeft));
             Log.i(TAG, "reboot skipped: cooldown, " + minutesLeft + " min left");
             return;
         }
-        long sinceAttempt = now - Prefs.lastRebootAttemptAt(this);
-        if (sinceAttempt >= 0 && sinceAttempt < MIN_REBOOT_ATTEMPT_GAP_MS) {
-            StatusBus.postReboot(getString(R.string.status_reboot_cooldown, 1L));
-            Log.i(TAG, "reboot skipped: last attempt " + sinceAttempt + " ms ago");
-            return;
-        }
 
-        int delaySec = Prefs.rebootDelaySec(this);
+        long delayMs = Prefs.rebootDelaySec(this) * 1000L;
+        long sinceAttempt = Prefs.sinceLastRebootAttempt(this);
+        if (sinceAttempt < MIN_REBOOT_ATTEMPT_GAP_MS) {
+            // Defer instead of skipping, so a flap right after an attempt does not lose the reboot.
+            delayMs = Math.max(delayMs, MIN_REBOOT_ATTEMPT_GAP_MS - sinceAttempt);
+            update(getString(R.string.status_reboot_deferred, ssid, delayMs / 1000L));
+        } else {
+            update(getString(R.string.status_reboot_scheduled, ssid, delayMs / 1000L));
+        }
         rebootPending = true;
-        update(getString(R.string.status_reboot_scheduled, ssid, delaySec));
+        rebootWaitNetworkTries = 0;
         handler.removeCallbacks(rebootRunnable);
-        handler.postDelayed(rebootRunnable, delaySec * 1000L);
+        handler.postDelayed(rebootRunnable, delayMs);
+    }
+
+    private void cancelPendingReboot() {
+        handler.removeCallbacks(rebootRunnable);
+        rebootPending = false;
+        rebootWaitNetworkTries = 0;
     }
 
     private void runScheduledReboot() {
+        if (destroyed) return;
         rebootPending = false;
         String ssid = Prefs.ssid(this);
         if (!ssid.equals(reconnector.currentSsid())) {
@@ -419,24 +501,53 @@ public class ReconnectService extends Service {
             scheduleTick(0);
             return;
         }
-        startReboot();
+        if (currentWifiNetwork() == null) {
+            // Associated but the Wi-Fi Network (IP) is not up yet: wait a little, bounded.
+            if (++rebootWaitNetworkTries <= REBOOT_WAIT_NETWORK_TRIES) {
+                rebootPending = true;
+                update(getString(R.string.status_reboot_waiting_network, ssid));
+                handler.postDelayed(rebootRunnable, 3_000L);
+                return;
+            }
+            rebootWaitNetworkTries = 0;
+            onRebootFinished(false, false, getString(R.string.check_no_wifi_network));
+            return;
+        }
+        rebootWaitNetworkTries = 0;
+        startReboot(false);
     }
 
-    private void startReboot() {
+    private void startReboot(boolean manual) {
         if (rebootInFlight) return;
         rebootInFlight = true;
-        Prefs.setLastRebootAttemptAt(this, System.currentTimeMillis());
         update(getString(R.string.status_reboot_sending));
         StatusBus.postReboot(getString(R.string.status_reboot_sending));
-        StarlinkCommands.reboot(this, wifiNetwork, (ok, text) -> {
-            rebootInFlight = false;
-            if (ok) Prefs.setLastRebootAt(this, System.currentTimeMillis());
-            String stamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "\n" + text;
-            Prefs.setLastRebootResult(this, stamp);
-            StatusBus.postReboot(stamp);
-            notifyRebootResult(ok, text);
-            if (running) scheduleTick(0);
-        });
+        StarlinkCommands.reboot(this, currentWifiNetwork(),
+                (anyOk, allOk, text) -> onRebootFinished(anyOk, allOk, text));
+        if (manual) consecutiveConnectFailures = 0;
+    }
+
+    private void onRebootFinished(boolean anyOk, boolean allOk, String text) {
+        // Bookkeeping must happen even if this instance was destroyed meanwhile (the result is
+        // real); UI and scheduling must not.
+        Prefs.markRebootAttempt(this);
+        int failures = anyOk ? 0 : Prefs.consecutiveRebootFailures(this) + 1;
+        Prefs.setConsecutiveRebootFailures(this, failures);
+        String stamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "\n" + text;
+        if (anyOk) {
+            Prefs.markRebootSent(this);
+        } else if (failures >= REBOOT_FAILURE_BACKOFF_AFTER) {
+            // Keep failing attempts from turning into a loop: pause for the full cooldown.
+            Prefs.markRebootSent(this);
+            Prefs.setConsecutiveRebootFailures(this, 0);
+            stamp += "\n" + getString(R.string.status_reboot_backoff, Prefs.rebootCooldownMin(this));
+        }
+        Prefs.setLastRebootResult(this, stamp);
+        StatusBus.postReboot(stamp);
+        if (destroyed) return;
+        rebootInFlight = false;
+        notifyRebootResult(anyOk, text);
+        scheduleTick(0);
     }
 
     private void notifyRebootResult(boolean ok, String text) {
@@ -459,6 +570,7 @@ public class ReconnectService extends Service {
     // ------------------------------------------------------------------ notifications
 
     private void update(String text) {
+        if (destroyed) return;
         if (text != null && !text.equals(lastNotificationText)) {
             lastNotificationText = text;
             if (nm != null) nm.notify(NOTIF_ID, buildNotification(text));
@@ -504,7 +616,14 @@ public class ReconnectService extends Service {
     // ------------------------------------------------------------------ checks
 
     private boolean hasLocationPermission() {
-        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+        // A targetSdk 28 app may scan with either precise or approximate location.
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private boolean hasBackgroundLocation() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return hasLocationPermission();
+        return checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;
     }
 

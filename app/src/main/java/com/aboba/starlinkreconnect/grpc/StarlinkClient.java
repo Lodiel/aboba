@@ -38,7 +38,7 @@ public final class StarlinkClient {
         public final boolean ok;
         public final String detail;
 
-        Result(boolean ok, String detail) {
+        public Result(boolean ok, String detail) {
             this.ok = ok;
             this.detail = detail;
         }
@@ -50,12 +50,19 @@ public final class StarlinkClient {
     }
 
     private final SocketFactory socketFactory;
+    private final Http2GrpcClient.Resolver resolver;
     private final String host;
     private final int port;
     private final int timeoutMs;
 
     public StarlinkClient(SocketFactory socketFactory, String host, int port, int timeoutMs) {
+        this(socketFactory, null, host, port, timeoutMs);
+    }
+
+    public StarlinkClient(SocketFactory socketFactory, Http2GrpcClient.Resolver resolver,
+                          String host, int port, int timeoutMs) {
         this.socketFactory = socketFactory;
+        this.resolver = resolver;
         this.host = host;
         this.port = port;
         this.timeoutMs = timeoutMs;
@@ -81,7 +88,7 @@ public final class StarlinkClient {
     public Result reboot() {
         byte[] body = new Proto.Writer().emptyMessage(REQUEST_REBOOT).toByteArray();
         try {
-            Http2GrpcClient.Response r = Http2GrpcClient.unaryCall(socketFactory, host, port,
+            Http2GrpcClient.Response r = Http2GrpcClient.unaryCall(socketFactory, resolver, host, port,
                     HANDLE_PATH, body, timeoutMs);
             if (r.isOk()) {
                 return new Result(true, "reboot accepted by " + host + ":" + port);
@@ -97,13 +104,18 @@ public final class StarlinkClient {
             return new Result(false, "reboot rejected by " + host + ":" + port + ": "
                     + statusName(r.grpcStatus) + (r.grpcMessage != null ? " - " + r.grpcMessage : ""));
         } catch (Http2GrpcClient.TransportException e) {
-            if (e.kind == Http2GrpcClient.Failure.DROPPED && e.requestSent) {
+            boolean ambiguous = e.requestSent
+                    && (e.kind == Http2GrpcClient.Failure.DROPPED || e.kind == Http2GrpcClient.Failure.TIMEOUT);
+            if (ambiguous) {
+                // The command was delivered; a device that restarts may drop the link (FIN/RST) or
+                // simply go silent. Watch whether it disappears before judging.
                 if (wentDownAfterCommand()) {
-                    return new Result(true, "reboot sent to " + host + ":" + port
-                            + ", connection dropped and the device went down (restarting)");
+                    return new Result(true, "reboot sent to " + host + ":" + port + ", "
+                            + (e.kind == Http2GrpcClient.Failure.DROPPED ? "connection dropped" : "no reply")
+                            + " and the device went down (restarting)");
                 }
-                return new Result(false, host + ":" + port + " dropped the connection but is still up: "
-                        + e.getMessage());
+                return new Result(false, host + ":" + port + " got the command but is still up ("
+                        + e.getMessage() + ")");
             }
             return new Result(false, host + ":" + port + " " + failureText(e));
         }
@@ -118,7 +130,7 @@ public final class StarlinkClient {
         for (int i = 0; i < PROBE_ATTEMPTS; i++) {
             sleep(PROBE_GAP_MS);
             try {
-                Http2GrpcClient.unaryCall(socketFactory, host, port, HANDLE_PATH, body, PROBE_TIMEOUT_MS);
+                Http2GrpcClient.unaryCall(socketFactory, resolver, host, port, HANDLE_PATH, body, PROBE_TIMEOUT_MS);
             } catch (Http2GrpcClient.TransportException e) {
                 if (e.kind == Http2GrpcClient.Failure.CONNECT
                         || (e.kind == Http2GrpcClient.Failure.TIMEOUT && !e.requestSent)) {
@@ -129,8 +141,9 @@ public final class StarlinkClient {
         return false;
     }
 
-    static final int PROBE_ATTEMPTS = 3;
-    static final long PROBE_GAP_MS = 2_000L;
+    /** Routers keep accepting TCP for a number of seconds after the command; watch for ~20 s. */
+    static final int PROBE_ATTEMPTS = 7;
+    static final long PROBE_GAP_MS = 3_000L;
     static final int PROBE_TIMEOUT_MS = 3_000;
 
     static String failureText(Http2GrpcClient.TransportException e) {
@@ -182,7 +195,7 @@ public final class StarlinkClient {
     public Result getDeviceInfo() {
         byte[] body = new Proto.Writer().emptyMessage(REQUEST_GET_DEVICE_INFO).toByteArray();
         try {
-            Http2GrpcClient.Response r = Http2GrpcClient.unaryCall(socketFactory, host, port,
+            Http2GrpcClient.Response r = Http2GrpcClient.unaryCall(socketFactory, resolver, host, port,
                     HANDLE_PATH, body, timeoutMs);
             if (!r.isOk()) {
                 return new Result(false, host + ":" + port + " answered " + statusName(r.grpcStatus)

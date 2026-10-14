@@ -69,7 +69,10 @@ public final class WifiReconnector {
         try {
             WifiInfo info = wm.getConnectionInfo();
             if (info == null) return null;
-            if (info.getNetworkId() == -1 && info.getSupplicantState() != SupplicantState.COMPLETED) {
+            // networkId/SSID are populated from the first association step; only COMPLETED means
+            // the link is really up (DHCP may still be pending, which the service checks via the
+            // ConnectivityManager Network).
+            if (info.getSupplicantState() != SupplicantState.COMPLETED) {
                 return null;
             }
             String ssid = unquote(info.getSSID());
@@ -195,7 +198,7 @@ public final class WifiReconnector {
             }
             Log.i(TAG, "addNetworkSuggestions(" + ssid + ") -> " + status);
             return status;
-        } catch (SecurityException | IllegalArgumentException e) {
+        } catch (RuntimeException e) {
             Log.w(TAG, "addNetworkSuggestions failed", e);
             return -1;
         }
@@ -206,7 +209,7 @@ public final class WifiReconnector {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || wm == null) return -1;
         try {
             wm.removeNetworkSuggestions(new ArrayList<>());
-        } catch (SecurityException e) {
+        } catch (RuntimeException e) {
             Log.w(TAG, "removeNetworkSuggestions failed", e);
         }
         return ensureSuggestion(ssid);
@@ -218,7 +221,8 @@ public final class WifiReconnector {
                 .setIsAppInteractionRequired(false)
                 .setPriority(Integer.MAX_VALUE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            b.setCredentialSharedWithUser(true);
+            // setCredentialSharedWithUser(true) is only legal for secured networks: for an open
+            // SSID build() throws IllegalStateException on Android 11+.
             b.setIsInitialAutojoinEnabled(true);
         }
         return b.build();

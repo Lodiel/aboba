@@ -16,7 +16,6 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import javax.net.SocketFactory;
 
 /**
  * Runs Starlink gRPC commands on a background thread, pinned to the Wi-Fi {@link Network} so
@@ -29,8 +28,15 @@ public final class StarlinkCommands {
     private static final long RETRY_GAP_MS = 4_000L;
 
     public interface Callback {
-        void onResult(boolean ok, String text);
+        /**
+         * @param anyOk at least one target accepted the command (arms the cooldown)
+         * @param allOk every configured target accepted it
+         */
+        void onResult(boolean anyOk, boolean allOk, String text);
     }
+
+    /** Worst case: 2 targets x 3 attempts x (call + probe window) plus gaps, with margin. */
+    private static final long WAKE_LOCK_MS = 5 * 60_000L;
 
     private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "starlink-grpc");
@@ -48,13 +54,34 @@ public final class StarlinkCommands {
         if (cm == null) return null;
         try {
             for (Network n : cm.getAllNetworks()) {
-                NetworkCapabilities caps = cm.getNetworkCapabilities(n);
-                if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return n;
+                if (isWifi(cm, n)) return n;
             }
         } catch (RuntimeException e) {
             Log.w(TAG, "getAllNetworks failed", e);
         }
         return null;
+    }
+
+    public static boolean isWifi(ConnectivityManager cm, Network n) {
+        if (cm == null || n == null) return false;
+        try {
+            NetworkCapabilities caps = cm.getNetworkCapabilities(n);
+            return caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** The preferred network while it is still a live Wi-Fi network, else whatever Wi-Fi exists now. */
+    private static Network pickWifi(Context app, Network preferred) {
+        ConnectivityManager cm = app.getSystemService(ConnectivityManager.class);
+        if (preferred != null && isWifi(cm, preferred)) return preferred;
+        return findWifiNetwork(app);
+    }
+
+    private static StarlinkClient client(Network net, String addr) {
+        return new StarlinkClient(net.getSocketFactory(), net::getByName,
+                Prefs.hostOf(addr), Prefs.portOf(addr), CALL_TIMEOUT_MS);
     }
 
     /**
@@ -66,35 +93,44 @@ public final class StarlinkCommands {
         EXECUTOR.execute(() -> {
             PowerManager.WakeLock wl = acquireWakeLock(app);
             try {
-                Network net = preferred != null ? preferred : findWifiNetwork(app);
-                SocketFactory sf = net != null ? net.getSocketFactory() : null;
                 List<String[]> targets = targets(app);
                 if (targets.isEmpty()) {
-                    MAIN.post(() -> cb.onResult(false, "no reboot target configured"));
+                    MAIN.post(() -> cb.onResult(false, false, "no reboot target configured"));
                     return;
                 }
                 StringBuilder summary = new StringBuilder();
                 boolean allOk = true;
+                boolean anyOk = false;
                 for (String[] t : targets) {
-                    StarlinkClient client = new StarlinkClient(sf, Prefs.hostOf(t[1]), Prefs.portOf(t[1]), CALL_TIMEOUT_MS);
                     StarlinkClient.Result last = null;
                     for (int attempt = 1; attempt <= REBOOT_ATTEMPTS; attempt++) {
-                        last = client.reboot();
+                        // Re-resolve the Wi-Fi network for every attempt: it may appear (DHCP just
+                        // finished) or change between attempts. Never fall back to the default
+                        // route: 192.168.x targets are unreachable over mobile data anyway.
+                        Network net = pickWifi(app, preferred);
+                        if (net == null) {
+                            last = new StarlinkClient.Result(false, app.getString(R.string.check_no_wifi_network));
+                        } else {
+                            last = client(net, t[1]).reboot();
+                        }
                         Log.i(TAG, t[0] + " reboot attempt " + attempt + ": " + last);
                         if (last.ok) break;
                         if (attempt < REBOOT_ATTEMPTS) sleep(RETRY_GAP_MS);
                     }
-                    allOk &= last != null && last.ok;
+                    boolean ok = last != null && last.ok;
+                    allOk &= ok;
+                    anyOk |= ok;
                     if (summary.length() > 0) summary.append('\n');
                     summary.append(t[0]).append(": ").append(last == null ? "?" : last.toString());
                 }
-                final boolean ok = allOk;
+                final boolean fAny = anyOk;
+                final boolean fAll = allOk;
                 final String text = summary.toString();
-                MAIN.post(() -> cb.onResult(ok, text));
+                MAIN.post(() -> cb.onResult(fAny, fAll, text));
             } catch (Throwable t) {
                 Log.e(TAG, "reboot task failed", t);
                 final String text = "internal error: " + t;
-                MAIN.post(() -> cb.onResult(false, text));
+                MAIN.post(() -> cb.onResult(false, false, text));
             } finally {
                 release(wl);
             }
@@ -107,20 +143,21 @@ public final class StarlinkCommands {
         EXECUTOR.execute(() -> {
             PowerManager.WakeLock wl = acquireWakeLock(app);
             try {
-                Network net = preferred != null ? preferred : findWifiNetwork(app);
-                SocketFactory sf = net != null ? net.getSocketFactory() : null;
-                String dishAddr = Prefs.dishAddr(app);
-                String routerAddr = Prefs.routerAddr(app);
-                StarlinkClient.Result dish = new StarlinkClient(sf, Prefs.hostOf(dishAddr), Prefs.portOf(dishAddr), CALL_TIMEOUT_MS).getDeviceInfo();
-                StarlinkClient.Result router = new StarlinkClient(sf, Prefs.hostOf(routerAddr), Prefs.portOf(routerAddr), CALL_TIMEOUT_MS).getDeviceInfo();
+                Network net = pickWifi(app, preferred);
+                if (net == null) {
+                    final String text = app.getString(R.string.check_no_wifi_network);
+                    MAIN.post(() -> cb.onResult(false, false, text));
+                    return;
+                }
+                StarlinkClient.Result dish = client(net, Prefs.dishAddr(app)).getDeviceInfo();
+                StarlinkClient.Result router = client(net, Prefs.routerAddr(app)).getDeviceInfo();
                 final boolean ok = dish.ok || router.ok;
-                final String text = app.getString(R.string.check_result, dish.toString(), router.toString())
-                        + (net == null ? "\n" + app.getString(R.string.check_no_wifi_network) : "");
-                MAIN.post(() -> cb.onResult(ok, text));
+                final String text = app.getString(R.string.check_result, dish.toString(), router.toString());
+                MAIN.post(() -> cb.onResult(ok, dish.ok && router.ok, text));
             } catch (Throwable t) {
                 Log.e(TAG, "check task failed", t);
                 final String text = "internal error: " + t;
-                MAIN.post(() -> cb.onResult(false, text));
+                MAIN.post(() -> cb.onResult(false, false, text));
             } finally {
                 release(wl);
             }
@@ -144,7 +181,7 @@ public final class StarlinkCommands {
             PowerManager pm = app.getSystemService(PowerManager.class);
             if (pm == null) return null;
             PowerManager.WakeLock wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "StarlinkReconnect:grpc");
-            wl.acquire(60_000L);
+            wl.acquire(WAKE_LOCK_MS);
             return wl;
         } catch (RuntimeException e) {
             return null;

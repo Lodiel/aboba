@@ -82,7 +82,7 @@ gradle assembleRelease
 
 Сборку делает GitHub Actions (`.github/workflows/build-apk.yml`). APK
 подписывается ключом из `app/keystore/starlink-reconnect.jks.base64` (Gradle
-декодирует его в `app/build/keystore/` при сборке). Ключ лежит в репозитории
+декодирует его в `app/keystore/starlink-reconnect.jks` при сборке; файл в .gitignore). Ключ лежит в репозитории
 специально: так каждая CI-сборка подписана одним и тем же ключом, и новую
 версию можно ставить поверх старой без удаления. Ключ не секретный и годится
 только для сайдлоада.

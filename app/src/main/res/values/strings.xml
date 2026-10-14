@@ -71,4 +71,11 @@
     <string name="notif_action_reboot">Reboot Starlink</string>
     <string name="btn_wifi_settings">Open Wi-Fi settings</string>
     <string name="status_legacy_blocked">%1$s is in range, but Android does not let the app manage it: the network is already saved in Wi-Fi settings by another owner. Forget it there (Open Wi-Fi settings) and the app will take over; until then the system auto-join is used.</string>
+    <string name="status_secured">%1$s is in range but secured (password-protected); this app only joins open networks.</string>
+    <string name="status_staying">%1$s is in range; staying on %2$s because switching away from other Wi-Fi is off.</string>
+    <string name="status_associating">Joining %1$s, waiting for an IP address…</string>
+    <string name="status_reboot_deferred">Connected to %1$s; previous reboot attempt was just now, retrying in %2$d s…</string>
+    <string name="status_reboot_waiting_network">Connected to %1$s, waiting for the Wi-Fi network to come up before rebooting…</string>
+    <string name="status_reboot_backoff">Reboot attempts keep failing; pausing automatic reboots for %1$d min.</string>
+    <string name="status_needs_foreground">Started in the background: Android hides Wi-Fi scan results until you open the app once (or allow location “all the time”).</string>
 </resources>

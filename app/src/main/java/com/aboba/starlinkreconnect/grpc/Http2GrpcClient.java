@@ -5,6 +5,7 @@ import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketException;
@@ -105,7 +106,17 @@ public final class Http2GrpcClient {
         }
     }
 
+    /** Resolves host names; on Android this should be Network.getByName so DNS goes over Wi-Fi. */
+    public interface Resolver {
+        InetAddress resolve(String host) throws IOException;
+    }
+
     private Http2GrpcClient() {}
+
+    public static Response unaryCall(SocketFactory factory, String host, int port, String path,
+                                     byte[] body, int timeoutMs) throws TransportException {
+        return unaryCall(factory, null, host, port, path, body, timeoutMs);
+    }
 
     /**
      * Performs a unary gRPC call.
@@ -116,17 +127,28 @@ public final class Http2GrpcClient {
      * @param body      serialized protobuf request
      * @param timeoutMs overall deadline for connect + response
      */
-    public static Response unaryCall(SocketFactory factory, String host, int port, String path,
-                                     byte[] body, int timeoutMs) throws TransportException {
+    public static Response unaryCall(SocketFactory factory, Resolver resolver, String host, int port,
+                                     String path, byte[] body, int timeoutMs) throws TransportException {
         final long deadline = System.nanoTime() + Math.max(1, timeoutMs) * 1_000_000L;
         SocketFactory sf = factory != null ? factory : SocketFactory.getDefault();
         boolean requestSent = false;
         Socket socket = null;
         try {
+            InetSocketAddress address;
+            try {
+                address = resolver != null
+                        ? new InetSocketAddress(resolver.resolve(host), port)
+                        : new InetSocketAddress(host, port);
+            } catch (IOException e) {
+                throw new TransportException(Failure.CONNECT, "cannot resolve " + host + ": " + describe(e), false, e);
+            }
+            if (address.isUnresolved()) {
+                throw new TransportException(Failure.CONNECT, "cannot resolve " + host, false, null);
+            }
             socket = sf.createSocket();
             socket.setTcpNoDelay(true);
             try {
-                socket.connect(new InetSocketAddress(host, port), Math.max(1, timeoutMs));
+                socket.connect(address, Math.max(1, timeoutMs));
             } catch (SocketTimeoutException e) {
                 throw new TransportException(Failure.TIMEOUT, "connect timed out after " + timeoutMs + " ms", false, e);
             } catch (IOException e) {

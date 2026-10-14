@@ -2,7 +2,9 @@ plugins {
     id("com.android.application")
 }
 
-val decodedKeystore: File = layout.buildDirectory.file("keystore/starlink-reconnect.jks").get().asFile.also { out ->
+// Written next to the .base64 source (git-ignored), not under build/, so that a `clean` in the
+// same invocation cannot delete it before validateSigning runs.
+val decodedKeystore: File = file("keystore/starlink-reconnect.jks").also { out ->
     val encoded = file("keystore/starlink-reconnect.jks.base64").readText()
     val bytes = java.util.Base64.getMimeDecoder().decode(encoded)
     if (!out.exists() || !out.readBytes().contentEquals(bytes)) {

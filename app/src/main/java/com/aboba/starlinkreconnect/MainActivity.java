@@ -130,9 +130,9 @@ public class MainActivity extends Activity implements StatusBus.Listener {
             if (ReconnectService.running) {
                 ReconnectService.rebootStarlinkNow(this);
             } else {
-                Prefs.setLastRebootAttemptAt(this, System.currentTimeMillis());
-                StarlinkCommands.reboot(this, null, (ok, text) -> {
-                    if (ok) Prefs.setLastRebootAt(this, System.currentTimeMillis());
+                StarlinkCommands.reboot(this, null, (anyOk, allOk, text) -> {
+                    Prefs.markRebootAttempt(this);
+                    if (anyOk) Prefs.markRebootSent(this);
                     String stamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "\n" + text;
                     Prefs.setLastRebootResult(this, stamp);
                     StatusBus.postReboot(stamp);
@@ -145,7 +145,7 @@ public class MainActivity extends Activity implements StatusBus.Listener {
             saveAll();
             Toast.makeText(this, R.string.toast_check_started, Toast.LENGTH_SHORT).show();
             textRebootStatus.setText(R.string.toast_check_started);
-            StarlinkCommands.check(this, null, (ok, text) -> {
+            StarlinkCommands.check(this, null, (anyOk, allOk, text) -> {
                 if (!isFinishing()) textRebootStatus.setText(text);
             });
         });
@@ -170,8 +170,10 @@ public class MainActivity extends Activity implements StatusBus.Listener {
         switchEnabled.setChecked(Prefs.enabled(this));
         suppressSwitchListener = false;
         StatusBus.register(this);
-        // If the user enabled the watchdog but the service died (battery saver etc.), revive it.
-        if (Prefs.enabled(this) && !ReconnectService.running) {
+        // (Re)start from the visible activity whenever enabled: this revives a dead service and,
+        // on Android 11+, upgrades a service that was started from BOOT_COMPLETED to
+        // "while-in-use" location access, which it needs to see Wi-Fi scan results.
+        if (Prefs.enabled(this)) {
             ReconnectService.start(this);
         }
     }
@@ -280,8 +282,9 @@ public class MainActivity extends Activity implements StatusBus.Listener {
     }
 
     private boolean hasLocationPermission() {
-        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-                == PackageManager.PERMISSION_GRANTED;
+        // A targetSdk 28 app may scan with either precise or approximate location.
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
     private void requestLocationPermission() {

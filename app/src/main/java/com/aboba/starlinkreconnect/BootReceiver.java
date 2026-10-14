@@ -15,7 +15,7 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
         if (Prefs.enabled(context)) {
-            ReconnectService.start(context);
+            ReconnectService.startFromBackground(context);
         }
     }
 }
