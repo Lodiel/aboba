@@ -87,6 +87,21 @@ gradle assembleRelease
 версию можно ставить поверх старой без удаления. Ключ не секретный и годится
 только для сайдлоада.
 
+### Сборка без Android SDK
+
+Если SDK недоступен (как в sandbox-окружении, где собирался первый APK), есть
+скрипт `tools/build-apk-nosdk.sh`: ему нужны только `android.jar` (например,
+из github.com/Sable/android-platforms), `aapt2` (можно взять из `apktool.jar`,
+`prebuilt/linux/aapt2_64`), `dalvik-dx` и `apksig` с Maven Central и JDK 17+.
+Он собирает ресурсы через `aapt2`, компилирует Java 8-байткод, конвертирует его
+в DEX через `dx` и подписывает APK схемой v2 тем же ключом. Именно поэтому в
+коде нет лямбд: `dx` не умеет их desugar-ить, а `LambdaMetafactory` в Android
+отсутствует.
+
+```bash
+tools/build-apk-nosdk.sh android.jar aapt2 dalvik-dx.jar apksig.jar StarlinkReconnect.apk
+```
+
 ## Протокол
 
 Терминал и роутер Starlink принимают gRPC без TLS (h2c). Клиент в
