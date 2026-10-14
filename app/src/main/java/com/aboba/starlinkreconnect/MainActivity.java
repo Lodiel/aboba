@@ -10,7 +10,10 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
 import android.provider.Settings;
+import android.view.KeyEvent;
+import android.view.View;
 import android.view.inputmethod.EditorInfo;
+import android.widget.CompoundButton;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -74,93 +77,162 @@ public class MainActivity extends Activity implements StatusBus.Listener {
         checkNotify.setChecked(Prefs.notifyOnConnect(this));
         loadRebootSettings();
 
-        editSsid.setOnEditorActionListener((v, actionId, event) -> {
-            if (actionId == EditorInfo.IME_ACTION_DONE) {
-                saveSsid();
-                return true;
+        editSsid.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView v, int actionId, KeyEvent event) {
+                if (actionId == EditorInfo.IME_ACTION_DONE) {
+                    saveSsid();
+                    return true;
+                }
+                return false;
             }
-            return false;
         });
-        editSsid.setOnFocusChangeListener((v, hasFocus) -> {
-            if (!hasFocus) saveSsid();
-        });
-
-        switchEnabled.setOnCheckedChangeListener((v, checked) -> {
-            if (suppressSwitchListener) return;
-            saveAll();
-            Prefs.setEnabled(this, checked);
-            if (checked) {
-                if (!hasLocationPermission()) requestLocationPermission();
-                ReconnectService.start(this);
-            } else {
-                ReconnectService.stop(this);
+        editSsid.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                if (!hasFocus) saveSsid();
             }
         });
 
-        checkForceSwitch.setOnCheckedChangeListener((v, checked) -> Prefs.setForceSwitch(this, checked));
-        checkNotify.setOnCheckedChangeListener((v, checked) -> Prefs.setNotifyOnConnect(this, checked));
-        checkReboot.setOnCheckedChangeListener((v, checked) -> Prefs.setRebootEnabled(this, checked));
-        radioTarget.setOnCheckedChangeListener((group, id) -> Prefs.setRebootTarget(this, targetFromRadio(id)));
+        switchEnabled.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                if (suppressSwitchListener) return;
+                saveAll();
+                Prefs.setEnabled(MainActivity.this, checked);
+                if (checked) {
+                    if (!hasLocationPermission()) requestLocationPermission();
+                    ReconnectService.start(MainActivity.this);
+                } else {
+                    ReconnectService.stop(MainActivity.this);
+                }
+            }
+        });
+
+        checkForceSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                Prefs.setForceSwitch(MainActivity.this, checked);
+            }
+        });
+        checkNotify.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                Prefs.setNotifyOnConnect(MainActivity.this, checked);
+            }
+        });
+        checkReboot.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton v, boolean checked) {
+                Prefs.setRebootEnabled(MainActivity.this, checked);
+            }
+        });
+        radioTarget.setOnCheckedChangeListener(new RadioGroup.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(RadioGroup group, int id) {
+                Prefs.setRebootTarget(MainActivity.this, targetFromRadio(id));
+            }
+        });
 
         Button btnReconnect = findViewById(R.id.btn_reconnect_now);
-        btnReconnect.setOnClickListener(v -> {
-            saveAll();
-            if (!hasLocationPermission()) {
-                Toast.makeText(this, R.string.toast_need_permissions, Toast.LENGTH_SHORT).show();
-                requestLocationPermission();
-                return;
+        btnReconnect.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                saveAll();
+                if (!hasLocationPermission()) {
+                    Toast.makeText(MainActivity.this, R.string.toast_need_permissions, Toast.LENGTH_SHORT).show();
+                    requestLocationPermission();
+                    return;
+                }
+                if (ReconnectService.running) {
+                    ReconnectService.reconnectNow(MainActivity.this);
+                } else {
+                    reconnector.connect(Prefs.ssid(MainActivity.this), true);
+                    reconnector.startScan();
+                }
+                Toast.makeText(MainActivity.this, R.string.toast_reconnect_sent, Toast.LENGTH_SHORT).show();
             }
-            if (ReconnectService.running) {
-                ReconnectService.reconnectNow(this);
-            } else {
-                reconnector.connect(Prefs.ssid(this), true);
-                reconnector.startScan();
-            }
-            Toast.makeText(this, R.string.toast_reconnect_sent, Toast.LENGTH_SHORT).show();
         });
 
         Button btnOpenStarlink = findViewById(R.id.btn_open_starlink);
-        btnOpenStarlink.setOnClickListener(v -> openStarlink());
+        btnOpenStarlink.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openStarlink();
+            }
+        });
 
         Button btnRebootNow = findViewById(R.id.btn_reboot_starlink_now);
-        btnRebootNow.setOnClickListener(v -> {
-            saveAll();
-            Toast.makeText(this, R.string.toast_reboot_started, Toast.LENGTH_SHORT).show();
-            textRebootStatus.setText(R.string.status_reboot_sending);
-            if (ReconnectService.running) {
-                ReconnectService.rebootStarlinkNow(this);
-            } else {
-                StarlinkCommands.reboot(this, null, (anyOk, allOk, text) -> {
-                    Prefs.markRebootAttempt(this);
-                    if (anyOk) Prefs.markRebootSent(this);
-                    String stamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "\n" + text;
-                    Prefs.setLastRebootResult(this, stamp);
-                    StatusBus.postReboot(stamp);
-                });
+        btnRebootNow.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                saveAll();
+                Toast.makeText(MainActivity.this, R.string.toast_reboot_started, Toast.LENGTH_SHORT).show();
+                textRebootStatus.setText(R.string.status_reboot_sending);
+                if (ReconnectService.running) {
+                    ReconnectService.rebootStarlinkNow(MainActivity.this);
+                } else {
+                    StarlinkCommands.reboot(MainActivity.this, null, new StarlinkCommands.Callback() {
+                        @Override
+                        public void onResult(boolean anyOk, boolean allOk, String text) {
+                            Prefs.markRebootAttempt(MainActivity.this);
+                            if (anyOk) Prefs.markRebootSent(MainActivity.this);
+                            String stamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "\n" + text;
+                            Prefs.setLastRebootResult(MainActivity.this, stamp);
+                            StatusBus.postReboot(stamp);
+                        }
+                    });
+                }
             }
         });
 
         Button btnCheck = findViewById(R.id.btn_check);
-        btnCheck.setOnClickListener(v -> {
-            saveAll();
-            Toast.makeText(this, R.string.toast_check_started, Toast.LENGTH_SHORT).show();
-            textRebootStatus.setText(R.string.toast_check_started);
-            StarlinkCommands.check(this, null, (anyOk, allOk, text) -> {
-                if (!isFinishing()) textRebootStatus.setText(text);
-            });
+        btnCheck.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                saveAll();
+                Toast.makeText(MainActivity.this, R.string.toast_check_started, Toast.LENGTH_SHORT).show();
+                textRebootStatus.setText(R.string.toast_check_started);
+                StarlinkCommands.check(MainActivity.this, null, new StarlinkCommands.Callback() {
+                    @Override
+                    public void onResult(boolean anyOk, boolean allOk, String text) {
+                        if (!isFinishing()) textRebootStatus.setText(text);
+                    }
+                });
+            }
         });
 
         Button btnPermissions = findViewById(R.id.btn_permissions);
-        btnPermissions.setOnClickListener(v -> requestLocationPermission());
+        btnPermissions.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestLocationPermission();
+            }
+        });
 
         Button btnBackgroundLocation = findViewById(R.id.btn_background_location);
-        btnBackgroundLocation.setOnClickListener(v -> requestBackgroundLocation());
+        btnBackgroundLocation.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestBackgroundLocation();
+            }
+        });
 
         Button btnBattery = findViewById(R.id.btn_battery);
-        btnBattery.setOnClickListener(v -> requestIgnoreBatteryOptimizations());
+        btnBattery.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                requestIgnoreBatteryOptimizations();
+            }
+        });
 
         Button btnWifiSettings = findViewById(R.id.btn_wifi_settings);
-        btnWifiSettings.setOnClickListener(v -> openWifiSettings());
+        btnWifiSettings.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                openWifiSettings();
+            }
+        });
     }
 
     @Override

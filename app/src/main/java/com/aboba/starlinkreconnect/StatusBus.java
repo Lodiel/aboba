@@ -20,13 +20,16 @@ public final class StatusBus {
 
     private StatusBus() {}
 
-    public static void register(Listener l) {
+    public static void register(final Listener l) {
         LISTENERS.addIfAbsent(l);
         final String snapshot = last;
         final String rebootSnapshot = lastReboot;
-        MAIN.post(() -> {
-            l.onStatus(snapshot);
-            l.onRebootStatus(rebootSnapshot);
+        MAIN.post(new Runnable() {
+            @Override
+            public void run() {
+                l.onStatus(snapshot);
+                l.onRebootStatus(rebootSnapshot);
+            }
         });
     }
 
@@ -36,15 +39,21 @@ public final class StatusBus {
 
     public static void post(final String text) {
         last = text;
-        MAIN.post(() -> {
-            for (Listener l : LISTENERS) l.onStatus(text);
+        MAIN.post(new Runnable() {
+            @Override
+            public void run() {
+                for (Listener l : LISTENERS) l.onStatus(text);
+            }
         });
     }
 
     public static void postReboot(final String text) {
         lastReboot = text;
-        MAIN.post(() -> {
-            for (Listener l : LISTENERS) l.onRebootStatus(text);
+        MAIN.post(new Runnable() {
+            @Override
+            public void run() {
+                for (Listener l : LISTENERS) l.onRebootStatus(text);
+            }
         });
     }
 }

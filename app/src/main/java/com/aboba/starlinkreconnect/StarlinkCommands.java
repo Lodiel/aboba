@@ -9,13 +9,16 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.util.Log;
 
+import com.aboba.starlinkreconnect.grpc.Http2GrpcClient;
 import com.aboba.starlinkreconnect.grpc.StarlinkClient;
 
+import java.io.IOException;
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-
+import java.util.concurrent.ThreadFactory;
 
 /**
  * Runs Starlink gRPC commands on a background thread, pinned to the Wi-Fi {@link Network} so
@@ -26,6 +29,8 @@ public final class StarlinkCommands {
     private static final int CALL_TIMEOUT_MS = 8_000;
     private static final int REBOOT_ATTEMPTS = 3;
     private static final long RETRY_GAP_MS = 4_000L;
+    /** Worst case: 2 targets x 3 attempts x (call + probe window) plus gaps, with margin. */
+    private static final long WAKE_LOCK_MS = 5 * 60_000L;
 
     public interface Callback {
         /**
@@ -35,13 +40,13 @@ public final class StarlinkCommands {
         void onResult(boolean anyOk, boolean allOk, String text);
     }
 
-    /** Worst case: 2 targets x 3 attempts x (call + probe window) plus gaps, with margin. */
-    private static final long WAKE_LOCK_MS = 5 * 60_000L;
-
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "starlink-grpc");
-        t.setDaemon(true);
-        return t;
+    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(new ThreadFactory() {
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "starlink-grpc");
+            t.setDaemon(true);
+            return t;
+        }
     });
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
@@ -79,87 +84,101 @@ public final class StarlinkCommands {
         return findWifiNetwork(app);
     }
 
-    private static StarlinkClient client(Network net, String addr) {
-        return new StarlinkClient(net.getSocketFactory(), net::getByName,
+    private static StarlinkClient client(final Network net, String addr) {
+        Http2GrpcClient.Resolver resolver = new Http2GrpcClient.Resolver() {
+            @Override
+            public InetAddress resolve(String host) throws IOException {
+                return net.getByName(host);
+            }
+        };
+        return new StarlinkClient(net.getSocketFactory(), resolver,
                 Prefs.hostOf(addr), Prefs.portOf(addr), CALL_TIMEOUT_MS);
+    }
+
+    private static void deliver(final Callback cb, final boolean anyOk, final boolean allOk, final String text) {
+        MAIN.post(new Runnable() {
+            @Override
+            public void run() {
+                cb.onResult(anyOk, allOk, text);
+            }
+        });
     }
 
     /**
      * Sends the reboot command to the configured target(s), retrying a few times per target.
      * The callback runs on the main thread with a human-readable summary.
      */
-    public static void reboot(Context context, Network preferred, Callback cb) {
+    public static void reboot(Context context, final Network preferred, final Callback cb) {
         final Context app = context.getApplicationContext();
-        EXECUTOR.execute(() -> {
-            PowerManager.WakeLock wl = acquireWakeLock(app);
-            try {
-                List<String[]> targets = targets(app);
-                if (targets.isEmpty()) {
-                    MAIN.post(() -> cb.onResult(false, false, "no reboot target configured"));
-                    return;
-                }
-                StringBuilder summary = new StringBuilder();
-                boolean allOk = true;
-                boolean anyOk = false;
-                for (String[] t : targets) {
-                    StarlinkClient.Result last = null;
-                    for (int attempt = 1; attempt <= REBOOT_ATTEMPTS; attempt++) {
-                        // Re-resolve the Wi-Fi network for every attempt: it may appear (DHCP just
-                        // finished) or change between attempts. Never fall back to the default
-                        // route: 192.168.x targets are unreachable over mobile data anyway.
-                        Network net = pickWifi(app, preferred);
-                        if (net == null) {
-                            last = new StarlinkClient.Result(false, app.getString(R.string.check_no_wifi_network));
-                        } else {
-                            last = client(net, t[1]).reboot();
-                        }
-                        Log.i(TAG, t[0] + " reboot attempt " + attempt + ": " + last);
-                        if (last.ok) break;
-                        if (attempt < REBOOT_ATTEMPTS) sleep(RETRY_GAP_MS);
+        EXECUTOR.execute(new Runnable() {
+            @Override
+            public void run() {
+                PowerManager.WakeLock wl = acquireWakeLock(app);
+                try {
+                    List<String[]> targets = targets(app);
+                    if (targets.isEmpty()) {
+                        deliver(cb, false, false, "no reboot target configured");
+                        return;
                     }
-                    boolean ok = last != null && last.ok;
-                    allOk &= ok;
-                    anyOk |= ok;
-                    if (summary.length() > 0) summary.append('\n');
-                    summary.append(t[0]).append(": ").append(last == null ? "?" : last.toString());
+                    StringBuilder summary = new StringBuilder();
+                    boolean allOk = true;
+                    boolean anyOk = false;
+                    for (String[] t : targets) {
+                        StarlinkClient.Result last = null;
+                        for (int attempt = 1; attempt <= REBOOT_ATTEMPTS; attempt++) {
+                            // Re-resolve the Wi-Fi network for every attempt: it may appear (DHCP
+                            // just finished) or change between attempts. Never fall back to the
+                            // default route: 192.168.x targets are unreachable over mobile data.
+                            Network net = pickWifi(app, preferred);
+                            if (net == null) {
+                                last = new StarlinkClient.Result(false, app.getString(R.string.check_no_wifi_network));
+                            } else {
+                                last = client(net, t[1]).reboot();
+                            }
+                            Log.i(TAG, t[0] + " reboot attempt " + attempt + ": " + last);
+                            if (last.ok) break;
+                            if (attempt < REBOOT_ATTEMPTS) sleep(RETRY_GAP_MS);
+                        }
+                        boolean ok = last != null && last.ok;
+                        allOk &= ok;
+                        anyOk |= ok;
+                        if (summary.length() > 0) summary.append('\n');
+                        summary.append(t[0]).append(": ").append(last == null ? "?" : last.toString());
+                    }
+                    deliver(cb, anyOk, allOk, summary.toString());
+                } catch (Throwable t) {
+                    Log.e(TAG, "reboot task failed", t);
+                    deliver(cb, false, false, "internal error: " + t);
+                } finally {
+                    release(wl);
                 }
-                final boolean fAny = anyOk;
-                final boolean fAll = allOk;
-                final String text = summary.toString();
-                MAIN.post(() -> cb.onResult(fAny, fAll, text));
-            } catch (Throwable t) {
-                Log.e(TAG, "reboot task failed", t);
-                final String text = "internal error: " + t;
-                MAIN.post(() -> cb.onResult(false, false, text));
-            } finally {
-                release(wl);
             }
         });
     }
 
     /** Queries device info from the dish and the router (whichever answers) for a connectivity check. */
-    public static void check(Context context, Network preferred, Callback cb) {
+    public static void check(Context context, final Network preferred, final Callback cb) {
         final Context app = context.getApplicationContext();
-        EXECUTOR.execute(() -> {
-            PowerManager.WakeLock wl = acquireWakeLock(app);
-            try {
-                Network net = pickWifi(app, preferred);
-                if (net == null) {
-                    final String text = app.getString(R.string.check_no_wifi_network);
-                    MAIN.post(() -> cb.onResult(false, false, text));
-                    return;
+        EXECUTOR.execute(new Runnable() {
+            @Override
+            public void run() {
+                PowerManager.WakeLock wl = acquireWakeLock(app);
+                try {
+                    Network net = pickWifi(app, preferred);
+                    if (net == null) {
+                        deliver(cb, false, false, app.getString(R.string.check_no_wifi_network));
+                        return;
+                    }
+                    StarlinkClient.Result dish = client(net, Prefs.dishAddr(app)).getDeviceInfo();
+                    StarlinkClient.Result router = client(net, Prefs.routerAddr(app)).getDeviceInfo();
+                    deliver(cb, dish.ok || router.ok, dish.ok && router.ok,
+                            app.getString(R.string.check_result, dish.toString(), router.toString()));
+                } catch (Throwable t) {
+                    Log.e(TAG, "check task failed", t);
+                    deliver(cb, false, false, "internal error: " + t);
+                } finally {
+                    release(wl);
                 }
-                StarlinkClient.Result dish = client(net, Prefs.dishAddr(app)).getDeviceInfo();
-                StarlinkClient.Result router = client(net, Prefs.routerAddr(app)).getDeviceInfo();
-                final boolean ok = dish.ok || router.ok;
-                final String text = app.getString(R.string.check_result, dish.toString(), router.toString());
-                MAIN.post(() -> cb.onResult(ok, dish.ok && router.ok, text));
-            } catch (Throwable t) {
-                Log.e(TAG, "check task failed", t);
-                final String text = "internal error: " + t;
-                MAIN.post(() -> cb.onResult(false, false, text));
-            } finally {
-                release(wl);
             }
         });
     }

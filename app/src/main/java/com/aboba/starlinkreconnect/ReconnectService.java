@@ -79,8 +79,18 @@ public class ReconnectService extends Service {
     private BroadcastReceiver wifiReceiver;
     private volatile Network wifiNetwork;
 
-    private final Runnable tickRunnable = this::tick;
-    private final Runnable rebootRunnable = this::runScheduledReboot;
+    private final Runnable tickRunnable = new Runnable() {
+        @Override
+        public void run() {
+            tick();
+        }
+    };
+    private final Runnable rebootRunnable = new Runnable() {
+        @Override
+        public void run() {
+            runScheduledReboot();
+        }
+    };
 
     private volatile boolean destroyed;
     private boolean seeded;
@@ -522,8 +532,12 @@ public class ReconnectService extends Service {
         rebootInFlight = true;
         update(getString(R.string.status_reboot_sending));
         StatusBus.postReboot(getString(R.string.status_reboot_sending));
-        StarlinkCommands.reboot(this, currentWifiNetwork(),
-                (anyOk, allOk, text) -> onRebootFinished(anyOk, allOk, text));
+        StarlinkCommands.reboot(this, currentWifiNetwork(), new StarlinkCommands.Callback() {
+            @Override
+            public void onResult(boolean anyOk, boolean allOk, String text) {
+                onRebootFinished(anyOk, allOk, text);
+            }
+        });
         if (manual) consecutiveConnectFailures = 0;
     }
 
