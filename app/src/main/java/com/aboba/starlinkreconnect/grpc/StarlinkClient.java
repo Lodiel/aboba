@@ -1,6 +1,5 @@
 package com.aboba.starlinkreconnect.grpc;
 
-import java.io.IOException;
 import java.util.List;
 
 import javax.net.SocketFactory;
@@ -71,9 +70,13 @@ public final class StarlinkClient {
     }
 
     /**
-     * Sends Request{reboot: RebootRequest{}}. A device that drops the connection right after the
-     * request was delivered is reported as success: the router in particular restarts before it
-     * manages to answer.
+     * Sends Request{reboot: RebootRequest{}}.
+     *
+     * The dish normally answers with an empty RebootResponse before restarting. The router (and
+     * a Starlink Mini) often drop the connection or answer UNAVAILABLE while already going down.
+     * Those two outcomes are therefore followed by a short probe: if the device stops accepting
+     * connections within a few seconds the reboot is reported as sent; if it stays up and keeps
+     * answering, the attempt is reported as failed so that the caller retries.
      */
     public Result reboot() {
         byte[] body = new Proto.Writer().emptyMessage(REQUEST_REBOOT).toByteArray();
@@ -84,19 +87,67 @@ public final class StarlinkClient {
                 return new Result(true, "reboot accepted by " + host + ":" + port);
             }
             if (r.grpcStatus == GRPC_UNAVAILABLE && r.message == null && r.httpStatus == 200) {
-                return new Result(true, "reboot sent to " + host + ":" + port
-                        + ", device went away while answering (" + statusName(r.grpcStatus) + ")");
+                if (wentDownAfterCommand()) {
+                    return new Result(true, "reboot sent to " + host + ":" + port
+                            + ", device answered UNAVAILABLE and then went down (restarting)");
+                }
+                return new Result(false, "reboot not accepted by " + host + ":" + port
+                        + ": UNAVAILABLE but the device is still up" + (r.grpcMessage != null ? " - " + r.grpcMessage : ""));
             }
             return new Result(false, "reboot rejected by " + host + ":" + port + ": "
                     + statusName(r.grpcStatus) + (r.grpcMessage != null ? " - " + r.grpcMessage : ""));
         } catch (Http2GrpcClient.TransportException e) {
-            if (e.requestSent && !(e.getCause() instanceof java.net.SocketTimeoutException)) {
-                return new Result(true, "reboot sent to " + host + ":" + port
-                        + ", connection dropped before the reply (device restarting): " + e.getMessage());
+            if (e.kind == Http2GrpcClient.Failure.DROPPED && e.requestSent) {
+                if (wentDownAfterCommand()) {
+                    return new Result(true, "reboot sent to " + host + ":" + port
+                            + ", connection dropped and the device went down (restarting)");
+                }
+                return new Result(false, host + ":" + port + " dropped the connection but is still up: "
+                        + e.getMessage());
             }
-            return new Result(false, host + ":" + port + " unreachable: " + e.getMessage());
-        } catch (IOException e) {
-            return new Result(false, host + ":" + port + " unreachable: " + describe(e));
+            return new Result(false, host + ":" + port + " " + failureText(e));
+        }
+    }
+
+    /**
+     * After an ambiguous reboot outcome, polls the device a few times: true when it stops
+     * accepting TCP connections (i.e. it is really restarting).
+     */
+    private boolean wentDownAfterCommand() {
+        byte[] body = new Proto.Writer().emptyMessage(REQUEST_GET_DEVICE_INFO).toByteArray();
+        for (int i = 0; i < PROBE_ATTEMPTS; i++) {
+            sleep(PROBE_GAP_MS);
+            try {
+                Http2GrpcClient.unaryCall(socketFactory, host, port, HANDLE_PATH, body, PROBE_TIMEOUT_MS);
+            } catch (Http2GrpcClient.TransportException e) {
+                if (e.kind == Http2GrpcClient.Failure.CONNECT
+                        || (e.kind == Http2GrpcClient.Failure.TIMEOUT && !e.requestSent)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    static final int PROBE_ATTEMPTS = 3;
+    static final long PROBE_GAP_MS = 2_000L;
+    static final int PROBE_TIMEOUT_MS = 3_000;
+
+    static String failureText(Http2GrpcClient.TransportException e) {
+        switch (e.kind) {
+            case CONNECT: return "unreachable: " + e.getMessage();
+            case TIMEOUT: return (e.requestSent ? "did not answer: " : "unreachable: ") + e.getMessage();
+            case DROPPED: return "dropped the connection: " + e.getMessage();
+            case REJECTED: return "refused the request: " + e.getMessage();
+            default: return "sent an invalid reply: " + e.getMessage();
+        }
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -152,8 +203,8 @@ public final class StarlinkClient {
             String hw = text(Proto.find(di, DEVICE_INFO_HARDWARE_VERSION));
             String sw = text(Proto.find(di, DEVICE_INFO_SOFTWARE_VERSION));
             return new Result(true, "id " + id + ", hw " + hw + ", sw " + sw);
-        } catch (IOException e) {
-            return new Result(false, host + ":" + port + " unreachable: " + describe(e));
+        } catch (Http2GrpcClient.TransportException e) {
+            return new Result(false, host + ":" + port + " " + failureText(e));
         }
     }
 
@@ -162,8 +213,4 @@ public final class StarlinkClient {
         return s == null || s.isEmpty() ? "?" : s;
     }
 
-    private static String describe(IOException e) {
-        String m = e.getMessage();
-        return e.getClass().getSimpleName() + (m == null ? "" : ": " + m);
-    }
 }

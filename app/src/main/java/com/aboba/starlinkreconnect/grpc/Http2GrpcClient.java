@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -18,7 +19,8 @@ import javax.net.SocketFactory;
  * A deliberately tiny HTTP/2 (RFC 7540) client that can perform one plaintext ("h2c") gRPC
  * unary call per connection. No TLS, no dependencies. It handles exactly what a gRPC server
  * sends for a unary call: SETTINGS, PING, WINDOW_UPDATE, HEADERS (+CONTINUATION), DATA,
- * trailers, RST_STREAM and GOAWAY.
+ * trailers, RST_STREAM and GOAWAY. Every failure surfaces as a {@link TransportException}
+ * with a {@link Failure} kind; no parser problem can escape as a RuntimeException.
  */
 public final class Http2GrpcClient {
     private static final byte[] PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".getBytes(StandardCharsets.US_ASCII);
@@ -46,6 +48,39 @@ public final class Http2GrpcClient {
     private static final int MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
     private static final int LOCAL_HEADER_TABLE_SIZE = 4096;
 
+    /** Why a call failed at the transport level. */
+    public enum Failure {
+        /** TCP connect failed or the request could not be written: nothing reached the peer. */
+        CONNECT,
+        /** The deadline passed (during connect when requestSent is false, else waiting for the reply). */
+        TIMEOUT,
+        /** The peer closed or reset the TCP connection after the whole request had been sent. */
+        DROPPED,
+        /** The peer explicitly refused the stream/connection (RST_STREAM, GOAWAY with an error). */
+        REJECTED,
+        /** The peer sent something that is not valid HTTP/2/HPACK/gRPC, or too much of it. */
+        PROTOCOL
+    }
+
+    /** Thrown for transport-level failures. */
+    public static final class TransportException extends IOException {
+        private static final long serialVersionUID = 2L;
+        public final Failure kind;
+        /** True when the connection was established and the whole request was written. */
+        public final boolean requestSent;
+
+        TransportException(Failure kind, String message, boolean requestSent, Throwable cause) {
+            super(message, cause);
+            this.kind = kind;
+            this.requestSent = requestSent;
+        }
+
+        @Override
+        public String toString() {
+            return kind + ": " + getMessage();
+        }
+    }
+
     /** Result of a unary call. */
     public static final class Response {
         public int httpStatus = -1;
@@ -70,21 +105,6 @@ public final class Http2GrpcClient {
         }
     }
 
-    /**
-     * Thrown for transport-level failures. {@link #requestSent} is true when the connection was
-     * established and the whole request was written before the failure: for a reboot command
-     * that usually means the device accepted it and dropped the link while restarting.
-     */
-    public static final class TransportException extends IOException {
-        private static final long serialVersionUID = 1L;
-        public final boolean requestSent;
-
-        TransportException(String message, boolean requestSent, Throwable cause) {
-            super(message, cause);
-            this.requestSent = requestSent;
-        }
-    }
-
     private Http2GrpcClient() {}
 
     /**
@@ -97,66 +117,116 @@ public final class Http2GrpcClient {
      * @param timeoutMs overall deadline for connect + response
      */
     public static Response unaryCall(SocketFactory factory, String host, int port, String path,
-                                     byte[] body, int timeoutMs) throws IOException {
-        long deadline = System.nanoTime() + timeoutMs * 1_000_000L;
+                                     byte[] body, int timeoutMs) throws TransportException {
+        final long deadline = System.nanoTime() + Math.max(1, timeoutMs) * 1_000_000L;
         SocketFactory sf = factory != null ? factory : SocketFactory.getDefault();
         boolean requestSent = false;
-        try (Socket socket = sf.createSocket()) {
+        Socket socket = null;
+        try {
+            socket = sf.createSocket();
             socket.setTcpNoDelay(true);
-            socket.connect(new InetSocketAddress(host, port), timeoutMs);
-            socket.setSoTimeout(Math.max(1, timeoutMs));
+            try {
+                socket.connect(new InetSocketAddress(host, port), Math.max(1, timeoutMs));
+            } catch (SocketTimeoutException e) {
+                throw new TransportException(Failure.TIMEOUT, "connect timed out after " + timeoutMs + " ms", false, e);
+            } catch (IOException e) {
+                throw new TransportException(Failure.CONNECT, describe(e), false, e);
+            }
             OutputStream out = socket.getOutputStream();
             DataInputStream in = new DataInputStream(socket.getInputStream());
 
-            // Client preface + our SETTINGS.
-            ByteArrayOutputStream settings = new ByteArrayOutputStream();
-            writeSetting(settings, SETTINGS_ENABLE_PUSH, 0);
-            writeSetting(settings, SETTINGS_HEADER_TABLE_SIZE, LOCAL_HEADER_TABLE_SIZE);
-            ByteArrayOutputStream initial = new ByteArrayOutputStream();
-            initial.write(PREFACE);
-            writeFrame(initial, TYPE_SETTINGS, 0, 0, settings.toByteArray());
-
-            // HEADERS for stream 1 (no END_STREAM: the body follows in DATA).
-            ByteArrayOutputStream block = new ByteArrayOutputStream();
-            Hpack.encodeLiteral(block, ":method", "POST");
-            Hpack.encodeLiteral(block, ":scheme", "http");
-            Hpack.encodeLiteral(block, ":path", path);
-            Hpack.encodeLiteral(block, ":authority", host + ":" + port);
-            Hpack.encodeLiteral(block, "content-type", "application/grpc");
-            Hpack.encodeLiteral(block, "te", "trailers");
-            Hpack.encodeLiteral(block, "user-agent", "starlink-reconnect/1.0 (minimal-h2c)");
-            Hpack.encodeLiteral(block, "grpc-timeout", Math.max(1, timeoutMs) + "m");
-            writeFrame(initial, TYPE_HEADERS, FLAG_END_HEADERS, STREAM_ID, block.toByteArray());
-
-            // DATA: gRPC length-prefixed message, END_STREAM.
-            ByteArrayOutputStream data = new ByteArrayOutputStream();
-            data.write(0); // not compressed
-            data.write((body.length >>> 24) & 0xFF);
-            data.write((body.length >>> 16) & 0xFF);
-            data.write((body.length >>> 8) & 0xFF);
-            data.write(body.length & 0xFF);
-            data.write(body);
-            writeFrame(initial, TYPE_DATA, FLAG_END_STREAM, STREAM_ID, data.toByteArray());
-
-            out.write(initial.toByteArray());
-            out.flush();
+            byte[] request = buildRequest(host, port, path, body, timeoutMs);
+            try {
+                out.write(request);
+                out.flush();
+            } catch (IOException e) {
+                throw new TransportException(Failure.CONNECT, "could not send request: " + describe(e), false, e);
+            }
             requestSent = true;
 
-            return readResponse(in, out, deadline);
+            try {
+                return readResponse(new FrameInput(in, socket, deadline), out);
+            } catch (TransportException e) {
+                throw e;
+            } catch (SocketTimeoutException e) {
+                throw new TransportException(Failure.TIMEOUT, "no response within " + timeoutMs + " ms", true, e);
+            } catch (EOFException | SocketException e) {
+                throw new TransportException(Failure.DROPPED,
+                        "connection dropped before the reply: " + describe(e), true, e);
+            } catch (IOException e) {
+                throw new TransportException(Failure.PROTOCOL, describe(e), true, e);
+            } catch (RuntimeException e) {
+                throw new TransportException(Failure.PROTOCOL, "malformed response: " + describe(e), true, e);
+            }
         } catch (TransportException e) {
             throw e;
-        } catch (SocketTimeoutException e) {
-            throw new TransportException(requestSent ? "no response within " + timeoutMs + " ms"
-                    : "connect timed out after " + timeoutMs + " ms", requestSent, e);
-        } catch (IOException e) {
-            String m = e.getMessage();
-            throw new TransportException(e.getClass().getSimpleName() + (m == null ? "" : ": " + m),
-                    requestSent, e);
+        } catch (IOException | RuntimeException e) {
+            throw new TransportException(requestSent ? Failure.PROTOCOL : Failure.CONNECT, describe(e), requestSent, e);
+        } finally {
+            if (socket != null) {
+                try {
+                    socket.close();
+                } catch (IOException ignored) {
+                }
+            }
         }
     }
 
-    private static Response readResponse(DataInputStream in, OutputStream out, long deadline)
+    private static byte[] buildRequest(String host, int port, String path, byte[] body, int timeoutMs)
             throws IOException {
+        ByteArrayOutputStream initial = new ByteArrayOutputStream();
+        initial.write(PREFACE);
+
+        ByteArrayOutputStream settings = new ByteArrayOutputStream();
+        writeSetting(settings, SETTINGS_ENABLE_PUSH, 0);
+        writeSetting(settings, SETTINGS_HEADER_TABLE_SIZE, LOCAL_HEADER_TABLE_SIZE);
+        writeFrame(initial, TYPE_SETTINGS, 0, 0, settings.toByteArray());
+
+        // HEADERS for stream 1 (no END_STREAM: the body follows in DATA).
+        ByteArrayOutputStream block = new ByteArrayOutputStream();
+        Hpack.encodeLiteral(block, ":method", "POST");
+        Hpack.encodeLiteral(block, ":scheme", "http");
+        Hpack.encodeLiteral(block, ":path", path);
+        Hpack.encodeLiteral(block, ":authority", host + ":" + port);
+        Hpack.encodeLiteral(block, "content-type", "application/grpc");
+        Hpack.encodeLiteral(block, "te", "trailers");
+        Hpack.encodeLiteral(block, "user-agent", "starlink-reconnect/1.0 (minimal-h2c)");
+        Hpack.encodeLiteral(block, "grpc-timeout", Math.max(1, timeoutMs) + "m");
+        writeFrame(initial, TYPE_HEADERS, FLAG_END_HEADERS, STREAM_ID, block.toByteArray());
+
+        // DATA: gRPC length-prefixed message, END_STREAM.
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        data.write(0); // not compressed
+        data.write((body.length >>> 24) & 0xFF);
+        data.write((body.length >>> 16) & 0xFF);
+        data.write((body.length >>> 8) & 0xFF);
+        data.write(body.length & 0xFF);
+        data.write(body);
+        writeFrame(initial, TYPE_DATA, FLAG_END_STREAM, STREAM_ID, data.toByteArray());
+        return initial.toByteArray();
+    }
+
+    /** Deadline-aware blocking reads: every read waits at most the remaining time. */
+    private static final class FrameInput {
+        private final DataInputStream in;
+        private final Socket socket;
+        private final long deadline;
+
+        FrameInput(DataInputStream in, Socket socket, long deadline) {
+            this.in = in;
+            this.socket = socket;
+            this.deadline = deadline;
+        }
+
+        void readFully(byte[] buf) throws IOException {
+            long remainingMs = (deadline - System.nanoTime()) / 1_000_000L;
+            if (remainingMs <= 0) throw new SocketTimeoutException("gRPC call deadline exceeded");
+            socket.setSoTimeout((int) Math.min(remainingMs, Integer.MAX_VALUE));
+            in.readFully(buf);
+        }
+    }
+
+    private static Response readResponse(FrameInput in, OutputStream out) throws IOException {
         Response resp = new Response();
         Hpack.Decoder decoder = new Hpack.Decoder(LOCAL_HEADER_TABLE_SIZE);
         ByteArrayOutputStream body = new ByteArrayOutputStream();
@@ -166,20 +236,15 @@ public final class Http2GrpcClient {
         byte[] header = new byte[9];
 
         while (true) {
-            long remainingMs = (deadline - System.nanoTime()) / 1_000_000L;
-            if (remainingMs <= 0) throw new SocketTimeoutException("gRPC call deadline exceeded");
-            try {
-                in.readFully(header);
-            } catch (EOFException e) {
-                throw new TransportException("connection closed before the response completed", true, e);
-            }
+            in.readFully(header);
             int length = ((header[0] & 0xFF) << 16) | ((header[1] & 0xFF) << 8) | (header[2] & 0xFF);
             int type = header[3] & 0xFF;
             int flags = header[4] & 0xFF;
             int streamId = ((header[5] & 0x7F) << 24) | ((header[6] & 0xFF) << 16)
                     | ((header[7] & 0xFF) << 8) | (header[8] & 0xFF);
             if (length > Math.max(peerMaxFrameSize, 16384) + 1024 || length > MAX_RESPONSE_BYTES) {
-                throw new IOException("HTTP/2 frame too large: " + length);
+                throw new TransportException(Failure.PROTOCOL, "HTTP/2 frame too large (" + length
+                        + " bytes, type " + type + "): peer is probably not speaking HTTP/2", true, null);
             }
             byte[] payload = new byte[length];
             in.readFully(payload);
@@ -187,6 +252,7 @@ public final class Http2GrpcClient {
             switch (type) {
                 case TYPE_SETTINGS:
                     if ((flags & FLAG_ACK) == 0) {
+                        if (length % 6 != 0) throw protocol("malformed SETTINGS frame");
                         for (int i = 0; i + 6 <= length; i += 6) {
                             int id = ((payload[i] & 0xFF) << 8) | (payload[i + 1] & 0xFF);
                             long value = ((payload[i + 2] & 0xFFL) << 24) | ((payload[i + 3] & 0xFF) << 16)
@@ -201,6 +267,7 @@ public final class Http2GrpcClient {
                     break;
 
                 case TYPE_PING:
+                    if (length != 8) throw protocol("malformed PING frame");
                     if ((flags & FLAG_ACK) == 0) {
                         writeFrame(out, TYPE_PING, FLAG_ACK, 0, payload);
                         out.flush();
@@ -208,23 +275,26 @@ public final class Http2GrpcClient {
                     break;
 
                 case TYPE_GOAWAY: {
+                    if (length < 8) throw protocol("malformed GOAWAY frame");
                     int lastStreamId = ((payload[0] & 0x7F) << 24) | ((payload[1] & 0xFF) << 16)
                             | ((payload[2] & 0xFF) << 8) | (payload[3] & 0xFF);
                     long errorCode = ((payload[4] & 0xFFL) << 24) | ((payload[5] & 0xFF) << 16)
                             | ((payload[6] & 0xFF) << 8) | (payload[7] & 0xFF);
                     String debug = length > 8 ? new String(payload, 8, length - 8, StandardCharsets.UTF_8) : "";
                     if (errorCode != 0 || lastStreamId < STREAM_ID) {
-                        throw new IOException("server sent GOAWAY (error " + errorCode
-                                + ", last stream " + lastStreamId + ") " + debug);
+                        throw new TransportException(Failure.REJECTED, "server sent GOAWAY (error "
+                                + errorCode + ", last stream " + lastStreamId + ") " + debug, true, null);
                     }
                     break; // graceful: our stream may still complete
                 }
 
                 case TYPE_RST_STREAM:
+                    if (length != 4) throw protocol("malformed RST_STREAM frame");
                     if (streamId == STREAM_ID) {
                         long errorCode = ((payload[0] & 0xFFL) << 24) | ((payload[1] & 0xFF) << 16)
                                 | ((payload[2] & 0xFF) << 8) | (payload[3] & 0xFF);
-                        throw new IOException("server reset the stream (error " + errorCode + ")");
+                        throw new TransportException(Failure.REJECTED,
+                                "server reset the stream (error " + errorCode + ")", true, null);
                     }
                     break;
 
@@ -233,14 +303,15 @@ public final class Http2GrpcClient {
                     int off = 0;
                     int end = length;
                     if ((flags & FLAG_PADDED) != 0) {
+                        if (length < 1) throw protocol("malformed padded HEADERS frame");
                         int pad = payload[0] & 0xFF;
                         off = 1;
                         end = length - pad;
-                        if (end < off) throw new IOException("HTTP/2 HEADERS padding overflow");
+                        if (end < off) throw protocol("HTTP/2 HEADERS padding overflow");
                     }
                     if ((flags & FLAG_PRIORITY) != 0) {
                         off += 5;
-                        if (off > end) throw new IOException("HTTP/2 HEADERS priority overflow");
+                        if (off > end) throw protocol("HTTP/2 HEADERS priority overflow");
                     }
                     ByteArrayOutputStream blockBytes = new ByteArrayOutputStream();
                     blockBytes.write(payload, off, end - off);
@@ -251,9 +322,11 @@ public final class Http2GrpcClient {
                         int ctype = header[3] & 0xFF;
                         hflags = header[4] & 0xFF;
                         if (ctype != TYPE_CONTINUATION) {
-                            throw new IOException("expected CONTINUATION, got frame type " + ctype);
+                            throw protocol("expected CONTINUATION, got frame type " + ctype);
                         }
-                        if (clen > MAX_RESPONSE_BYTES) throw new IOException("CONTINUATION too large");
+                        if (clen > MAX_RESPONSE_BYTES || blockBytes.size() + clen > MAX_RESPONSE_BYTES) {
+                            throw protocol("header block too large");
+                        }
                         byte[] cpayload = new byte[clen];
                         in.readFully(cpayload);
                         blockBytes.write(cpayload, 0, clen);
@@ -286,13 +359,14 @@ public final class Http2GrpcClient {
                     int off = 0;
                     int end = length;
                     if ((flags & FLAG_PADDED) != 0) {
+                        if (length < 1) throw protocol("malformed padded DATA frame");
                         int pad = payload[0] & 0xFF;
                         off = 1;
                         end = length - pad;
-                        if (end < off) throw new IOException("HTTP/2 DATA padding overflow");
+                        if (end < off) throw protocol("HTTP/2 DATA padding overflow");
                     }
                     body.write(payload, off, end - off);
-                    if (body.size() > MAX_RESPONSE_BYTES) throw new IOException("response too large");
+                    if (body.size() > MAX_RESPONSE_BYTES) throw protocol("response too large");
                     receivedSinceWindowUpdate += length;
                     if (receivedSinceWindowUpdate >= 16384) {
                         byte[] inc = new byte[] {
@@ -319,14 +393,18 @@ public final class Http2GrpcClient {
         }
     }
 
+    private static TransportException protocol(String message) {
+        return new TransportException(Failure.PROTOCOL, message, true, null);
+    }
+
     private static void finish(Response resp, byte[] body) {
         if (body.length >= 5) {
             int compressed = body[0] & 0xFF;
-            int len = ((body[1] & 0xFF) << 24) | ((body[2] & 0xFF) << 16)
+            long len = ((body[1] & 0xFFL) << 24) | ((body[2] & 0xFF) << 16)
                     | ((body[3] & 0xFF) << 8) | (body[4] & 0xFF);
-            if (len >= 0 && 5 + len <= body.length) {
-                resp.message = new byte[len];
-                System.arraycopy(body, 5, resp.message, 0, len);
+            if (len <= body.length - 5L) {
+                resp.message = new byte[(int) len];
+                System.arraycopy(body, 5, resp.message, 0, (int) len);
                 resp.messageCompressed = compressed != 0;
             }
         }
@@ -374,6 +452,11 @@ public final class Http2GrpcClient {
             out.write(raw[i]);
         }
         return new String(out.toByteArray(), StandardCharsets.UTF_8);
+    }
+
+    private static String describe(Throwable e) {
+        String m = e.getMessage();
+        return e.getClass().getSimpleName() + (m == null ? "" : ": " + m);
     }
 
     private static void writeSetting(ByteArrayOutputStream out, int id, int value) {

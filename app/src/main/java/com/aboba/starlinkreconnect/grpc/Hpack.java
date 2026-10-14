@@ -60,6 +60,14 @@ final class Hpack {
         }
 
         List<String[]> decode(byte[] block, int off, int len) throws IOException {
+            try {
+                return decodeBlock(block, off, len);
+            } catch (RuntimeException e) {
+                throw new IOException("HPACK: malformed header block (" + e + ")", e);
+            }
+        }
+
+        private List<String[]> decodeBlock(byte[] block, int off, int len) throws IOException {
             List<String[]> headers = new ArrayList<>();
             Reader r = new Reader(block, off, len);
             while (r.hasMore()) {
@@ -157,23 +165,24 @@ final class Hpack {
 
         int readInt(int prefixBits) throws IOException {
             int max = (1 << prefixBits) - 1;
-            int value = next() & max;
-            if (value < max) return value;
+            long value = next() & max;
+            if (value < max) return (int) value;
             int shift = 0;
             int b;
             do {
                 b = next();
                 if (shift > 28) throw new IOException("HPACK: integer too large");
-                value += (b & 0x7F) << shift;
+                value += (long) (b & 0x7F) << shift;
                 shift += 7;
+                if (value > Integer.MAX_VALUE) throw new IOException("HPACK: integer too large");
             } while ((b & 0x80) != 0);
-            return value;
+            return (int) value;
         }
 
         String readString() throws IOException {
             boolean huffman = (peek() & 0x80) != 0;
             int len = readInt(7);
-            if (len < 0 || pos + len > end) throw new IOException("HPACK: string overruns block");
+            if (len < 0 || len > end - pos) throw new IOException("HPACK: string overruns block");
             String s;
             if (huffman) {
                 s = Huffman.decode(buf, pos, len);
@@ -224,7 +233,8 @@ final class Hpack {
         private Huffman() {}
 
         static String decode(byte[] buf, int off, int len) throws IOException {
-            ByteArrayOutputStream out = new ByteArrayOutputStream(len * 2);
+            if (len < 0 || off < 0 || off + len > buf.length) throw new IOException("HPACK: bad Huffman range");
+            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(16, Math.min(len * 2, 1 << 20)));
             int node = 0;
             int depth = 0;
             for (int i = off; i < off + len; i++) {

@@ -109,8 +109,8 @@ public final class Proto {
                     case WIRE_LENGTH: {
                         long[] len = readVarint(data, pos);
                         pos = (int) len[1];
+                        if (len[0] < 0 || len[0] > data.length - pos) return null;
                         int n = (int) len[0];
-                        if (n < 0 || pos + n > data.length) return null;
                         byte[] b = new byte[n];
                         System.arraycopy(data, pos, b, 0, n);
                         pos += n;
@@ -128,7 +128,7 @@ public final class Proto {
                         return null; // groups and unknown wire types are not supported
                 }
             }
-        } catch (IndexOutOfBoundsException e) {
+        } catch (RuntimeException e) {
             return null;
         }
         return fields;

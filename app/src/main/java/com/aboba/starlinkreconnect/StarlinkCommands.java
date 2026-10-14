@@ -69,6 +69,10 @@ public final class StarlinkCommands {
                 Network net = preferred != null ? preferred : findWifiNetwork(app);
                 SocketFactory sf = net != null ? net.getSocketFactory() : null;
                 List<String[]> targets = targets(app);
+                if (targets.isEmpty()) {
+                    MAIN.post(() -> cb.onResult(false, "no reboot target configured"));
+                    return;
+                }
                 StringBuilder summary = new StringBuilder();
                 boolean allOk = true;
                 for (String[] t : targets) {
@@ -87,6 +91,10 @@ public final class StarlinkCommands {
                 final boolean ok = allOk;
                 final String text = summary.toString();
                 MAIN.post(() -> cb.onResult(ok, text));
+            } catch (Throwable t) {
+                Log.e(TAG, "reboot task failed", t);
+                final String text = "internal error: " + t;
+                MAIN.post(() -> cb.onResult(false, text));
             } finally {
                 release(wl);
             }
@@ -109,6 +117,10 @@ public final class StarlinkCommands {
                 final String text = app.getString(R.string.check_result, dish.toString(), router.toString())
                         + (net == null ? "\n" + app.getString(R.string.check_no_wifi_network) : "");
                 MAIN.post(() -> cb.onResult(ok, text));
+            } catch (Throwable t) {
+                Log.e(TAG, "check task failed", t);
+                final String text = "internal error: " + t;
+                MAIN.post(() -> cb.onResult(false, text));
             } finally {
                 release(wl);
             }
