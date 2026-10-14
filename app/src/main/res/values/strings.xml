@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Starlink Reconnect</string>
+
+    <string name="label_ssid">Network name (SSID)</string>
+    <string name="hint_ssid">Starlink</string>
+    <string name="switch_enabled">Auto-reconnect watchdog</string>
+    <string name="check_force_switch">Switch to this network even when connected to another Wi-Fi</string>
+    <string name="check_notify">Notify when connected (tap opens the Starlink app)</string>
+
+    <string name="btn_permissions">Grant permissions</string>
+    <string name="btn_background_location">Allow location “all the time”</string>
+    <string name="btn_battery">Disable battery optimisation</string>
+    <string name="btn_save_network">Save network in system Wi-Fi settings</string>
+    <string name="btn_reconnect_now">Reconnect now</string>
+    <string name="btn_open_starlink">Open Starlink app</string>
+
+    <string name="status_title">Status</string>
+    <string name="status_idle">Watchdog is stopped.</string>
+    <string name="status_starting">Starting…</string>
+    <string name="status_wifi_off">Wi-Fi is off, turning it on…</string>
+    <string name="status_connected">Connected to %1$s</string>
+    <string name="status_connecting">%1$s is in range, connecting…</string>
+    <string name="status_not_visible">%1$s is not in range (connected: %2$s)</string>
+    <string name="status_no_location">Location permission is required to see Wi-Fi networks.</string>
+    <string name="status_location_off">Turn on Location: Android hides Wi-Fi scan results otherwise.</string>
+    <string name="status_other">Other Wi-Fi</string>
+    <string name="status_none">none</string>
+
+    <string name="notif_channel_service">Reconnect watchdog</string>
+    <string name="notif_channel_events">Connection events</string>
+    <string name="notif_connected_title">Connected to %1$s</string>
+    <string name="notif_connected_text">Tap to open the Starlink app</string>
+    <string name="notif_action_reconnect">Reconnect</string>
+    <string name="notif_action_stop">Stop</string>
+
+    <string name="toast_saved">Settings saved</string>
+    <string name="toast_starlink_missing">Starlink app is not installed, opening Play Store</string>
+    <string name="toast_need_permissions">Grant location permission first</string>
+    <string name="toast_reconnect_sent">Reconnect requested</string>
+    <string name="toast_suggestion_result">System suggestion status: %1$d</string>
+
+    <string name="help_text">How it works: the watchdog runs as a foreground service. Whenever the open network with the SSID above is in range and the phone is not connected to it, the app re-joins it and keeps Wi-Fi alive even if Android thinks it has no internet. Grant location (needed by Android to scan Wi-Fi), keep Location turned on, and exclude the app from battery optimisation so it survives in the background.</string>
+</resources>

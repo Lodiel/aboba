@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Starlink Reconnect</string>
+
+    <string name="label_ssid">Назва мережі (SSID)</string>
+    <string name="hint_ssid">Starlink</string>
+    <string name="switch_enabled">Автоперепідключення (вотчдог)</string>
+    <string name="check_force_switch">Перемикатися на цю мережу, навіть якщо підключено до іншого Wi-Fi</string>
+    <string name="check_notify">Сповіщати про підключення (дотик відкриває застосунок Starlink)</string>
+
+    <string name="btn_permissions">Надати дозволи</string>
+    <string name="btn_background_location">Дозволити геолокацію «завжди»</string>
+    <string name="btn_battery">Вимкнути оптимізацію батареї</string>
+    <string name="btn_save_network">Зберегти мережу в налаштуваннях Wi-Fi</string>
+    <string name="btn_reconnect_now">Перепідключити зараз</string>
+    <string name="btn_open_starlink">Відкрити застосунок Starlink</string>
+
+    <string name="status_title">Статус</string>
+    <string name="status_idle">Вотчдог зупинено.</string>
+    <string name="status_starting">Запуск…</string>
+    <string name="status_wifi_off">Wi-Fi вимкнено, вмикаю…</string>
+    <string name="status_connected">Підключено до %1$s</string>
+    <string name="status_connecting">%1$s у зоні дії, підключаюся…</string>
+    <string name="status_not_visible">%1$s не в зоні дії (підключено: %2$s)</string>
+    <string name="status_no_location">Потрібен дозвіл на геолокацію, інакше Android не показує Wi-Fi мережі.</string>
+    <string name="status_location_off">Увімкніть геолокацію: без неї Android ховає результати сканування Wi-Fi.</string>
+    <string name="status_other">інший Wi-Fi</string>
+    <string name="status_none">немає</string>
+
+    <string name="notif_channel_service">Вотчдог перепідключення</string>
+    <string name="notif_channel_events">Події підключення</string>
+    <string name="notif_connected_title">Підключено до %1$s</string>
+    <string name="notif_connected_text">Натисніть, щоб відкрити застосунок Starlink</string>
+    <string name="notif_action_reconnect">Перепідключити</string>
+    <string name="notif_action_stop">Стоп</string>
+
+    <string name="toast_saved">Налаштування збережено</string>
+    <string name="toast_starlink_missing">Застосунок Starlink не встановлено, відкриваю Play Store</string>
+    <string name="toast_need_permissions">Спочатку надайте дозвіл на геолокацію</string>
+    <string name="toast_reconnect_sent">Запит на перепідключення надіслано</string>
+    <string name="toast_suggestion_result">Статус системної підказки мережі: %1$d</string>
+
+    <string name="help_text">Як це працює: вотчдог живе як foreground-сервіс. Щойно відкрита мережа із вказаним SSID з’являється в зоні дії, а телефон до неї не підключений, застосунок перепідключається до неї та утримує Wi-Fi, навіть якщо Android вважає, що інтернету немає. Надайте геолокацію (Android вимагає її для сканування Wi-Fi), тримайте геолокацію увімкненою та вимкніть оптимізацію батареї, щоб сервіс не вбивався у фоні.</string>
+</resources>

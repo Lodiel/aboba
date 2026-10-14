@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Wi-Fi arcs -->
+    <path
+        android:pathData="M30,52 C43,39 65,39 78,52"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M39,61 C47,53 61,53 69,61"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="6"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,72 m-5,0 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0"
+        android:fillColor="#FFFFFF" />
+    <!-- Circular "reconnect" arrow -->
+    <path
+        android:pathData="M72,24 A14,14 0 1,1 60,16"
+        android:strokeColor="#4FC3F7"
+        android:strokeWidth="4"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M72,16 L72,25 L63,25 Z"
+        android:fillColor="#4FC3F7" />
+</vector>
