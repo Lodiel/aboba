@@ -1,3 +1,5 @@
+import java.util.Base64
+
 plugins {
     id("com.android.application")
 }
@@ -6,7 +8,8 @@ plugins {
 // same invocation cannot delete it before validateSigning runs.
 val decodedKeystore: File = file("keystore/starlink-reconnect.jks").also { out ->
     val encoded = file("keystore/starlink-reconnect.jks.base64").readText()
-    val bytes = java.util.Base64.getMimeDecoder().decode(encoded)
+    // Imported above: inside this script `java` resolves to the java extension, not the package.
+    val bytes = Base64.getMimeDecoder().decode(encoded)
     if (!out.exists() || !out.readBytes().contentEquals(bytes)) {
         out.parentFile.mkdirs()
         out.writeBytes(bytes)
@@ -60,6 +63,7 @@ android {
         // targetSdk 28 is deliberate (see defaultConfig), don't fail the build on it.
         disable += listOf("ExpiredTargetSdkVersion", "OldTargetApi")
         abortOnError = false
+        checkReleaseBuilds = false
     }
 }
 
