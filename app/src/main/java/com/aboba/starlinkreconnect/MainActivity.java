@@ -15,11 +15,14 @@ import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.RadioGroup;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.text.DateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 
 public class MainActivity extends Activity implements StatusBus.Listener {
     public static final String STARLINK_PACKAGE = "com.starlink.mobile";
@@ -33,6 +36,14 @@ public class MainActivity extends Activity implements StatusBus.Listener {
     private CheckBox checkForceSwitch;
     private CheckBox checkNotify;
     private TextView textStatus;
+
+    private CheckBox checkReboot;
+    private RadioGroup radioTarget;
+    private EditText editDelay;
+    private EditText editCooldown;
+    private EditText editDishAddr;
+    private EditText editRouterAddr;
+    private TextView textRebootStatus;
 
     private WifiReconnector reconnector;
     private boolean suppressSwitchListener;
@@ -53,9 +64,18 @@ public class MainActivity extends Activity implements StatusBus.Listener {
         checkNotify = findViewById(R.id.check_notify);
         textStatus = findViewById(R.id.text_status);
 
+        checkReboot = findViewById(R.id.check_reboot);
+        radioTarget = findViewById(R.id.radio_target);
+        editDelay = findViewById(R.id.edit_delay);
+        editCooldown = findViewById(R.id.edit_cooldown);
+        editDishAddr = findViewById(R.id.edit_dish_addr);
+        editRouterAddr = findViewById(R.id.edit_router_addr);
+        textRebootStatus = findViewById(R.id.text_reboot_status);
+
         editSsid.setText(Prefs.ssid(this));
         checkForceSwitch.setChecked(Prefs.forceSwitch(this));
         checkNotify.setChecked(Prefs.notifyOnConnect(this));
+        loadRebootSettings();
 
         editSsid.setOnEditorActionListener((v, actionId, event) -> {
             if (actionId == EditorInfo.IME_ACTION_DONE) {
@@ -70,7 +90,7 @@ public class MainActivity extends Activity implements StatusBus.Listener {
 
         switchEnabled.setOnCheckedChangeListener((v, checked) -> {
             if (suppressSwitchListener) return;
-            saveSsid();
+            saveAll();
             Prefs.setEnabled(this, checked);
             if (checked) {
                 if (!hasLocationPermission()) requestLocationPermission();
@@ -82,10 +102,12 @@ public class MainActivity extends Activity implements StatusBus.Listener {
 
         checkForceSwitch.setOnCheckedChangeListener((v, checked) -> Prefs.setForceSwitch(this, checked));
         checkNotify.setOnCheckedChangeListener((v, checked) -> Prefs.setNotifyOnConnect(this, checked));
+        checkReboot.setOnCheckedChangeListener((v, checked) -> Prefs.setRebootEnabled(this, checked));
+        radioTarget.setOnCheckedChangeListener((group, id) -> Prefs.setRebootTarget(this, targetFromRadio(id)));
 
         Button btnReconnect = findViewById(R.id.btn_reconnect_now);
         btnReconnect.setOnClickListener(v -> {
-            saveSsid();
+            saveAll();
             if (!hasLocationPermission()) {
                 Toast.makeText(this, R.string.toast_need_permissions, Toast.LENGTH_SHORT).show();
                 requestLocationPermission();
@@ -102,6 +124,34 @@ public class MainActivity extends Activity implements StatusBus.Listener {
 
         Button btnOpenStarlink = findViewById(R.id.btn_open_starlink);
         btnOpenStarlink.setOnClickListener(v -> openStarlink());
+
+        Button btnRebootNow = findViewById(R.id.btn_reboot_starlink_now);
+        btnRebootNow.setOnClickListener(v -> {
+            saveAll();
+            Toast.makeText(this, R.string.toast_reboot_started, Toast.LENGTH_SHORT).show();
+            textRebootStatus.setText(R.string.status_reboot_sending);
+            if (ReconnectService.running) {
+                ReconnectService.rebootStarlinkNow(this);
+            } else {
+                Prefs.setLastRebootAttemptAt(this, System.currentTimeMillis());
+                StarlinkCommands.reboot(this, null, (ok, text) -> {
+                    if (ok) Prefs.setLastRebootAt(this, System.currentTimeMillis());
+                    String stamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "\n" + text;
+                    Prefs.setLastRebootResult(this, stamp);
+                    StatusBus.postReboot(stamp);
+                });
+            }
+        });
+
+        Button btnCheck = findViewById(R.id.btn_check);
+        btnCheck.setOnClickListener(v -> {
+            saveAll();
+            Toast.makeText(this, R.string.toast_check_started, Toast.LENGTH_SHORT).show();
+            textRebootStatus.setText(R.string.toast_check_started);
+            StarlinkCommands.check(this, null, (ok, text) -> {
+                if (!isFinishing()) textRebootStatus.setText(text);
+            });
+        });
 
         Button btnPermissions = findViewById(R.id.btn_permissions);
         btnPermissions.setOnClickListener(v -> requestLocationPermission());
@@ -132,7 +182,7 @@ public class MainActivity extends Activity implements StatusBus.Listener {
     @Override
     protected void onPause() {
         StatusBus.unregister(this);
-        saveSsid();
+        saveAll();
         super.onPause();
     }
 
@@ -145,10 +195,67 @@ public class MainActivity extends Activity implements StatusBus.Listener {
         }
     }
 
-    // ------------------------------------------------------------------ actions
+    @Override
+    public void onRebootStatus(String text) {
+        if (text == null || text.isEmpty()) {
+            String last = Prefs.lastRebootResult(this);
+            textRebootStatus.setText(last.isEmpty() ? getString(R.string.reboot_none) : last);
+        } else {
+            textRebootStatus.setText(text);
+        }
+    }
+
+    // ------------------------------------------------------------------ settings
+
+    private void loadRebootSettings() {
+        checkReboot.setChecked(Prefs.rebootEnabled(this));
+        String target = Prefs.rebootTarget(this);
+        radioTarget.check(Prefs.TARGET_ROUTER.equals(target) ? R.id.radio_router
+                : Prefs.TARGET_BOTH.equals(target) ? R.id.radio_both : R.id.radio_dish);
+        editDelay.setText(String.valueOf(Prefs.rebootDelaySec(this)));
+        editCooldown.setText(String.valueOf(Prefs.rebootCooldownMin(this)));
+        editDishAddr.setText(Prefs.dishAddr(this));
+        editRouterAddr.setText(Prefs.routerAddr(this));
+    }
+
+    private static String targetFromRadio(int id) {
+        if (id == R.id.radio_router) return Prefs.TARGET_ROUTER;
+        if (id == R.id.radio_both) return Prefs.TARGET_BOTH;
+        return Prefs.TARGET_DISH;
+    }
+
+    private void saveAll() {
+        saveSsid();
+        saveRebootSettings();
+    }
+
+    private void saveRebootSettings() {
+        Prefs.setRebootEnabled(this, checkReboot.isChecked());
+        Prefs.setRebootTarget(this, targetFromRadio(radioTarget.getCheckedRadioButtonId()));
+        Prefs.setRebootDelaySec(this, parseInt(editDelay, Prefs.DEFAULT_DELAY_SEC));
+        Prefs.setRebootCooldownMin(this, parseInt(editCooldown, Prefs.DEFAULT_COOLDOWN_MIN));
+        Prefs.setDishAddr(this, text(editDishAddr));
+        Prefs.setRouterAddr(this, text(editRouterAddr));
+        // Reflect normalisation (e.g. a bare host gets the default port) back into the fields.
+        if (!text(editDishAddr).equals(Prefs.dishAddr(this))) editDishAddr.setText(Prefs.dishAddr(this));
+        if (!text(editRouterAddr).equals(Prefs.routerAddr(this))) editRouterAddr.setText(Prefs.routerAddr(this));
+    }
+
+    private static String text(EditText e) {
+        return e.getText() == null ? "" : e.getText().toString().trim();
+    }
+
+    private static int parseInt(EditText e, int fallback) {
+        try {
+            return Integer.parseInt(text(e));
+        } catch (NumberFormatException ex) {
+            e.setText(String.valueOf(fallback));
+            return fallback;
+        }
+    }
 
     private void saveSsid() {
-        String typed = editSsid.getText() == null ? "" : editSsid.getText().toString().trim();
+        String typed = text(editSsid);
         if (typed.isEmpty()) typed = Prefs.DEFAULT_SSID;
         String old = Prefs.ssid(this);
         if (!typed.equals(old)) {
@@ -159,6 +266,8 @@ public class MainActivity extends Activity implements StatusBus.Listener {
             Toast.makeText(this, R.string.toast_saved, Toast.LENGTH_SHORT).show();
         }
     }
+
+    // ------------------------------------------------------------------ actions
 
     private void openStarlink() {
         Intent i = ReconnectService.starlinkLaunchIntent(this);

@@ -40,5 +40,35 @@
     <string name="toast_reconnect_sent">Reconnect requested</string>
     <string name="toast_suggestion_result">System suggestion status: %1$d</string>
 
-    <string name="help_text">How it works: the watchdog runs as a foreground service. Whenever the open network with the SSID above is in range and the phone is not connected to it, the app re-joins it and keeps Wi-Fi alive even if Android thinks it has no internet. Grant location (needed by Android to scan Wi-Fi), keep Location turned on, and exclude the app from battery optimisation so it survives in the background.</string>
+    <string name="help_text">How it works: the watchdog runs as a foreground service. Whenever the open network with the SSID above is in range and the phone is not connected to it, the app re-joins it and keeps Wi-Fi alive even if Android thinks it has no internet. Right after connecting it sends the reboot command to the Starlink terminal over its local gRPC API (192.168.100.1:9200), the same call the official app makes. Grant location (needed by Android to scan Wi-Fi), keep Location turned on, and exclude the app from battery optimisation so it survives in the background.</string>
+
+    <!-- Starlink reboot -->
+    <string name="section_reboot">Reboot Starlink after connecting</string>
+    <string name="check_reboot">Send the reboot command right after connecting to the network</string>
+    <string name="label_target">What to reboot</string>
+    <string name="target_dish">Dish (terminal)</string>
+    <string name="target_router">Router (Wi-Fi)</string>
+    <string name="target_both">Both</string>
+    <string name="target_name_dish">dish</string>
+    <string name="target_name_router">router</string>
+    <string name="label_cooldown">Not more often than once per (minutes)</string>
+    <string name="label_delay">Delay after connecting (seconds)</string>
+    <string name="label_dish_addr">Dish gRPC address (host:port)</string>
+    <string name="label_router_addr">Router gRPC address (host:port)</string>
+    <string name="btn_reboot_starlink_now">Reboot Starlink now</string>
+    <string name="btn_check">Check connection to Starlink</string>
+    <string name="reboot_status_title">Last reboot command</string>
+    <string name="reboot_none">no commands sent yet</string>
+    <string name="status_reboot_scheduled">Connected to %1$s, sending reboot in %2$d s…</string>
+    <string name="status_reboot_sending">Sending reboot command to Starlink…</string>
+    <string name="status_reboot_cooldown">Reboot skipped (cooldown, next possible in %1$d min)</string>
+    <string name="status_reboot_disabled">Auto-reboot is off</string>
+    <string name="notif_reboot_ok_title">Starlink reboot command sent</string>
+    <string name="notif_reboot_fail_title">Starlink reboot failed</string>
+    <string name="toast_reboot_started">Sending reboot…</string>
+    <string name="toast_check_started">Checking…</string>
+    <string name="check_result">Dish: %1$s\nRouter: %2$s</string>
+    <string name="check_no_wifi_network">No Wi-Fi network found, used the default route.</string>
+    <string name="reboot_result_prefix">%1$s: %2$s</string>
+    <string name="notif_action_reboot">Reboot Starlink</string>
 </resources>

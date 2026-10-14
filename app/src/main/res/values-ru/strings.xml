@@ -40,5 +40,35 @@
     <string name="toast_reconnect_sent">Запрос на переподключение отправлен</string>
     <string name="toast_suggestion_result">Статус системной подсказки сети: %1$d</string>
 
-    <string name="help_text">Как это работает: вотчдог живёт как foreground-сервис. Как только открытая сеть с указанным SSID появляется в зоне действия, а телефон к ней не подключён, приложение переподключается к ней и удерживает Wi-Fi, даже если Android считает, что интернета нет. Выдайте геолокацию (Android требует её для сканирования Wi-Fi), держите геолокацию включённой и отключите оптимизацию батареи, чтобы сервис не убивался в фоне.</string>
+    <string name="help_text">Как это работает: вотчдог живёт как foreground-сервис. Как только открытая сеть с указанным SSID появляется в зоне действия, а телефон к ней не подключён, приложение переподключается к ней и удерживает Wi-Fi, даже если Android считает, что интернета нет. Сразу после подключения оно отправляет команду перезагрузки терминалу Starlink через его локальный gRPC API (192.168.100.1:9200) — тот же вызов, что делает официальное приложение. Выдайте геолокацию (Android требует её для сканирования Wi-Fi), держите геолокацию включённой и отключите оптимизацию батареи, чтобы сервис не убивался в фоне.</string>
+
+    <!-- Starlink reboot -->
+    <string name="section_reboot">Перезагрузка Starlink после подключения</string>
+    <string name="check_reboot">Отправлять команду перезагрузки сразу после подключения к сети</string>
+    <string name="label_target">Что перезагружать</string>
+    <string name="target_dish">Терминал (тарелка)</string>
+    <string name="target_router">Роутер (Wi-Fi)</string>
+    <string name="target_both">Оба</string>
+    <string name="target_name_dish">терминал</string>
+    <string name="target_name_router">роутер</string>
+    <string name="label_cooldown">Не чаще одного раза в (минут)</string>
+    <string name="label_delay">Задержка после подключения (секунд)</string>
+    <string name="label_dish_addr">gRPC-адрес терминала (host:port)</string>
+    <string name="label_router_addr">gRPC-адрес роутера (host:port)</string>
+    <string name="btn_reboot_starlink_now">Перезагрузить Starlink сейчас</string>
+    <string name="btn_check">Проверить связь со Starlink</string>
+    <string name="reboot_status_title">Последняя команда перезагрузки</string>
+    <string name="reboot_none">команды ещё не отправлялись</string>
+    <string name="status_reboot_scheduled">Подключено к %1$s, отправлю перезагрузку через %2$d с…</string>
+    <string name="status_reboot_sending">Отправляю команду перезагрузки Starlink…</string>
+    <string name="status_reboot_cooldown">Перезагрузка пропущена (кулдаун, следующая возможна через %1$d мин)</string>
+    <string name="status_reboot_disabled">Автоперезагрузка выключена</string>
+    <string name="notif_reboot_ok_title">Команда перезагрузки Starlink отправлена</string>
+    <string name="notif_reboot_fail_title">Перезагрузка Starlink не удалась</string>
+    <string name="toast_reboot_started">Отправляю перезагрузку…</string>
+    <string name="toast_check_started">Проверяю…</string>
+    <string name="check_result">Терминал: %1$s\nРоутер: %2$s</string>
+    <string name="check_no_wifi_network">Wi-Fi сеть не найдена, использован маршрут по умолчанию.</string>
+    <string name="reboot_result_prefix">%1$s: %2$s</string>
+    <string name="notif_action_reboot">Ребут Starlink</string>
 </resources>

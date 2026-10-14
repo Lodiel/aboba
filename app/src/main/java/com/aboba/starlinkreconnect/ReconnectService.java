@@ -27,10 +27,15 @@ import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
 
+import java.text.DateFormat;
+import java.util.Date;
+
 /**
  * Foreground "watchdog" service. Every few seconds (and on every Wi-Fi state / scan broadcast)
  * it checks whether the phone is connected to the target SSID; if the network is in range and
- * the phone is not on it, it forces a (re)connection.
+ * the phone is not on it, it forces a (re)connection. Once connected it sends the Starlink
+ * reboot command over the local gRPC API (with a delay, retries and a cooldown so that a router
+ * reboot, which drops the Wi-Fi, does not trigger an endless reboot loop).
  *
  * It also holds a {@link NetworkRequest} for TRANSPORT_WIFI so that Android keeps the Wi-Fi
  * link up even when it decides the network has "no internet" (typical for Starlink while the
@@ -42,16 +47,20 @@ public class ReconnectService extends Service {
     public static final String ACTION_START = "com.aboba.starlinkreconnect.START";
     public static final String ACTION_STOP = "com.aboba.starlinkreconnect.STOP";
     public static final String ACTION_RECONNECT_NOW = "com.aboba.starlinkreconnect.RECONNECT_NOW";
+    public static final String ACTION_REBOOT_STARLINK_NOW = "com.aboba.starlinkreconnect.REBOOT_STARLINK_NOW";
 
     static final String CHANNEL_SERVICE = "watchdog";
     static final String CHANNEL_EVENTS = "events";
     private static final int NOTIF_ID = 1;
     private static final int NOTIF_CONNECTED_ID = 2;
+    private static final int NOTIF_REBOOT_ID = 3;
 
     private static final long TICK_MS = 15_000L;
     private static final long ATTEMPT_MIN_INTERVAL_MS = 20_000L;
     private static final long SCAN_MIN_INTERVAL_MS = 60_000L;
     private static final long SUGGESTION_REFRESH_MS = 5 * 60_000L;
+    /** Never fire two automatic reboot attempts closer than this, even when the first failed. */
+    private static final long MIN_REBOOT_ATTEMPT_GAP_MS = 60_000L;
 
     public static volatile boolean running = false;
 
@@ -61,26 +70,24 @@ public class ReconnectService extends Service {
     private NotificationManager nm;
     private ConnectivityManager.NetworkCallback wifiCallback;
     private BroadcastReceiver wifiReceiver;
+    private volatile Network wifiNetwork;
 
     private final Runnable tickRunnable = this::tick;
+    private final Runnable rebootRunnable = this::runScheduledReboot;
 
     private long lastAttempt;
     private long lastScan;
     private long lastSuggestionRefresh;
     private int attempts;
     private boolean wasConnected;
+    private boolean rebootPending;
+    private boolean rebootInFlight;
     private String lastNotificationText;
 
     // ------------------------------------------------------------------ static helpers
 
     public static void start(Context context) {
-        Context app = context.getApplicationContext();
-        Intent i = new Intent(app, ReconnectService.class).setAction(ACTION_START);
-        try {
-            app.startForegroundService(i);
-        } catch (RuntimeException e) {
-            Log.w(TAG, "startForegroundService failed", e);
-        }
+        send(context, ACTION_START);
     }
 
     public static void stop(Context context) {
@@ -89,8 +96,16 @@ public class ReconnectService extends Service {
     }
 
     public static void reconnectNow(Context context) {
+        send(context, ACTION_RECONNECT_NOW);
+    }
+
+    public static void rebootStarlinkNow(Context context) {
+        send(context, ACTION_REBOOT_STARLINK_NOW);
+    }
+
+    private static void send(Context context, String action) {
         Context app = context.getApplicationContext();
-        Intent i = new Intent(app, ReconnectService.class).setAction(ACTION_RECONNECT_NOW);
+        Intent i = new Intent(app, ReconnectService.class).setAction(action);
         try {
             app.startForegroundService(i);
         } catch (RuntimeException e) {
@@ -171,6 +186,12 @@ public class ReconnectService extends Service {
             scheduleTick(2_000);
             return START_STICKY;
         }
+        if (ACTION_REBOOT_STARLINK_NOW.equals(action)) {
+            handler.removeCallbacks(rebootRunnable);
+            rebootPending = false;
+            startReboot();
+            return START_STICKY;
+        }
         scheduleTick(0);
         return START_STICKY;
     }
@@ -193,6 +214,7 @@ public class ReconnectService extends Service {
             }
             wifiCallback = null;
         }
+        wifiNetwork = null;
         StatusBus.post(getString(R.string.status_idle));
         super.onDestroy();
     }
@@ -230,11 +252,13 @@ public class ReconnectService extends Service {
         wifiCallback = new ConnectivityManager.NetworkCallback() {
             @Override
             public void onAvailable(Network network) {
+                wifiNetwork = network;
                 scheduleTick(1_000);
             }
 
             @Override
             public void onLost(Network network) {
+                if (network.equals(wifiNetwork)) wifiNetwork = null;
                 scheduleTick(1_000);
             }
         };
@@ -277,11 +301,22 @@ public class ReconnectService extends Service {
                 attempts = 0;
                 onConnected(ssid);
             }
-            update(getString(R.string.status_connected, ssid));
+            if (rebootInFlight) {
+                update(getString(R.string.status_reboot_sending));
+            } else if (!rebootPending) {
+                update(getString(R.string.status_connected, ssid));
+            }
             scheduleTick(TICK_MS);
             return;
         }
-        wasConnected = false;
+        if (wasConnected) {
+            wasConnected = false;
+            if (rebootPending) {
+                // Lost the network before the delayed reboot fired: do not send it blindly.
+                handler.removeCallbacks(rebootRunnable);
+                rebootPending = false;
+            }
+        }
 
         long now = SystemClock.elapsedRealtime();
         ScanResult visible = reconnector.findVisible(ssid);
@@ -325,18 +360,99 @@ public class ReconnectService extends Service {
     }
 
     private void onConnected(String ssid) {
-        if (!Prefs.notifyOnConnect(this) || nm == null) return;
-        PendingIntent pi = PendingIntent.getActivity(this, 1, starlinkLaunchIntent(this),
+        if (Prefs.notifyOnConnect(this) && nm != null) {
+            PendingIntent pi = PendingIntent.getActivity(this, 1, starlinkLaunchIntent(this),
+                    PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            Notification n = new Notification.Builder(this, CHANNEL_EVENTS)
+                    .setSmallIcon(R.drawable.ic_stat_wifi)
+                    .setContentTitle(getString(R.string.notif_connected_title, ssid))
+                    .setContentText(getString(R.string.notif_connected_text))
+                    .setContentIntent(pi)
+                    .setAutoCancel(true)
+                    .build();
+            nm.notify(NOTIF_CONNECTED_ID, n);
+        }
+        scheduleRebootAfterConnect(ssid);
+    }
+
+    // ------------------------------------------------------------------ Starlink reboot
+
+    private void scheduleRebootAfterConnect(String ssid) {
+        if (!Prefs.rebootEnabled(this)) {
+            StatusBus.postReboot(getString(R.string.status_reboot_disabled));
+            return;
+        }
+        if (rebootPending || rebootInFlight) return;
+
+        long now = System.currentTimeMillis();
+        long cooldownMs = Prefs.rebootCooldownMin(this) * 60_000L;
+        long sinceLast = now - Prefs.lastRebootAt(this);
+        if (sinceLast >= 0 && sinceLast < cooldownMs) {
+            long minutesLeft = (cooldownMs - sinceLast + 59_999L) / 60_000L;
+            StatusBus.postReboot(getString(R.string.status_reboot_cooldown, minutesLeft));
+            Log.i(TAG, "reboot skipped: cooldown, " + minutesLeft + " min left");
+            return;
+        }
+        long sinceAttempt = now - Prefs.lastRebootAttemptAt(this);
+        if (sinceAttempt >= 0 && sinceAttempt < MIN_REBOOT_ATTEMPT_GAP_MS) {
+            StatusBus.postReboot(getString(R.string.status_reboot_cooldown, 1L));
+            Log.i(TAG, "reboot skipped: last attempt " + sinceAttempt + " ms ago");
+            return;
+        }
+
+        int delaySec = Prefs.rebootDelaySec(this);
+        rebootPending = true;
+        update(getString(R.string.status_reboot_scheduled, ssid, delaySec));
+        handler.removeCallbacks(rebootRunnable);
+        handler.postDelayed(rebootRunnable, delaySec * 1000L);
+    }
+
+    private void runScheduledReboot() {
+        rebootPending = false;
+        String ssid = Prefs.ssid(this);
+        if (!ssid.equals(reconnector.currentSsid())) {
+            Log.i(TAG, "reboot cancelled: no longer on " + ssid);
+            scheduleTick(0);
+            return;
+        }
+        startReboot();
+    }
+
+    private void startReboot() {
+        if (rebootInFlight) return;
+        rebootInFlight = true;
+        Prefs.setLastRebootAttemptAt(this, System.currentTimeMillis());
+        update(getString(R.string.status_reboot_sending));
+        StatusBus.postReboot(getString(R.string.status_reboot_sending));
+        StarlinkCommands.reboot(this, wifiNetwork, (ok, text) -> {
+            rebootInFlight = false;
+            if (ok) Prefs.setLastRebootAt(this, System.currentTimeMillis());
+            String stamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "\n" + text;
+            Prefs.setLastRebootResult(this, stamp);
+            StatusBus.postReboot(stamp);
+            notifyRebootResult(ok, text);
+            if (running) scheduleTick(0);
+        });
+    }
+
+    private void notifyRebootResult(boolean ok, String text) {
+        if (nm == null) return;
+        Intent open = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent pi = PendingIntent.getActivity(this, 4, open,
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         Notification n = new Notification.Builder(this, CHANNEL_EVENTS)
                 .setSmallIcon(R.drawable.ic_stat_wifi)
-                .setContentTitle(getString(R.string.notif_connected_title, ssid))
-                .setContentText(getString(R.string.notif_connected_text))
+                .setContentTitle(getString(ok ? R.string.notif_reboot_ok_title : R.string.notif_reboot_fail_title))
+                .setContentText(text)
+                .setStyle(new Notification.BigTextStyle().bigText(text))
                 .setContentIntent(pi)
                 .setAutoCancel(true)
                 .build();
-        nm.notify(NOTIF_CONNECTED_ID, n);
+        nm.notify(NOTIF_REBOOT_ID, n);
     }
+
+    // ------------------------------------------------------------------ notifications
 
     private void update(String text) {
         if (text != null && !text.equals(lastNotificationText)) {
@@ -355,6 +471,9 @@ public class ReconnectService extends Service {
         PendingIntent reconnectPi = PendingIntent.getForegroundService(this, 2,
                 new Intent(this, ReconnectService.class).setAction(ACTION_RECONNECT_NOW),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent rebootPi = PendingIntent.getForegroundService(this, 5,
+                new Intent(this, ReconnectService.class).setAction(ACTION_REBOOT_STARLINK_NOW),
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent stopPi = PendingIntent.getForegroundService(this, 3,
                 new Intent(this, ReconnectService.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
@@ -371,6 +490,8 @@ public class ReconnectService extends Service {
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .addAction(new Notification.Action.Builder(icon,
                         getString(R.string.notif_action_reconnect), reconnectPi).build())
+                .addAction(new Notification.Action.Builder(icon,
+                        getString(R.string.notif_action_reboot), rebootPi).build())
                 .addAction(new Notification.Action.Builder(icon,
                         getString(R.string.notif_action_stop), stopPi).build())
                 .build();
