@@ -1,0 +1,38 @@
+// Minimal subset of SpaceX.API.Device (field numbers from the dish's own reflection data,
+// see github.com/clarkzjw/starlink-grpc-golang proto/spacex_api/device/*.proto).
+syntax = "proto3";
+package SpaceX.API.Device;
+
+service Device {
+  rpc Handle(Request) returns (Response);
+}
+
+message Request {
+  uint64 id = 1;
+  string target_id = 13;
+  uint64 epoch_id = 14;
+  oneof request {
+    RebootRequest reboot = 1001;
+    GetDeviceInfoRequest get_device_info = 1008;
+  }
+}
+
+message Response {
+  uint64 id = 1;
+  oneof response {
+    RebootResponse reboot = 1001;
+    GetDeviceInfoResponse get_device_info = 1004;
+  }
+}
+
+message RebootRequest {}
+message RebootResponse {}
+message GetDeviceInfoRequest {}
+message GetDeviceInfoResponse { DeviceInfo device_info = 1; }
+
+message DeviceInfo {
+  string id = 1;
+  string hardware_version = 2;
+  string software_version = 3;
+  string country_code = 4;
+}

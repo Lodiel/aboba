@@ -353,6 +353,7 @@ public class ReconnectService extends Service {
             // on every app update, phone reboot or process restart).
             seeded = true;
             wasConnected = linkUp;
+            Log.i(TAG, "seeded: ssid=" + current + " linkUp=" + linkUp + " (no reboot for the initial state)");
             if (linkUp) {
                 update(getString(R.string.status_connected, ssid));
                 scheduleTick(TICK_MS);
@@ -362,6 +363,7 @@ public class ReconnectService extends Service {
 
         if (linkUp) {
             if (!wasConnected) {
+                Log.i(TAG, "connected to " + ssid + " (transition)");
                 wasConnected = true;
                 attempts = 0;
                 consecutiveConnectFailures = 0;
@@ -384,6 +386,7 @@ public class ReconnectService extends Service {
         }
 
         if (wasConnected) {
+            Log.i(TAG, "disconnected from " + ssid + " (now: " + current + ")");
             wasConnected = false;
             // Lost the network before a delayed reboot fired: do not send it blindly.
             cancelPendingReboot();
@@ -492,6 +495,7 @@ public class ReconnectService extends Service {
         }
         rebootPending = true;
         rebootWaitNetworkTries = 0;
+        Log.i(TAG, "reboot scheduled in " + delayMs + " ms");
         handler.removeCallbacks(rebootRunnable);
         handler.postDelayed(rebootRunnable, delayMs);
     }
@@ -542,6 +546,7 @@ public class ReconnectService extends Service {
     }
 
     private void onRebootFinished(boolean anyOk, boolean allOk, String text) {
+        Log.i(TAG, "reboot finished: anyOk=" + anyOk + " allOk=" + allOk + " " + text.replace("\n", " | "));
         // Bookkeeping must happen even if this instance was destroyed meanwhile (the result is
         // real); UI and scheduling must not.
         Prefs.markRebootAttempt(this);
