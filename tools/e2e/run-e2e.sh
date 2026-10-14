@@ -75,6 +75,8 @@ adb logcat -c || true
 
 step "install"
 adb install -r -g "$APK" || fail "install failed"
+adb shell dumpsys package "$PKG" | grep -q "android.permission.INTERNET: granted=true" \
+  || fail "INTERNET permission missing: the app cannot open any socket"
 adb shell pm grant "$PKG" android.permission.ACCESS_FINE_LOCATION || true
 adb shell pm grant "$PKG" android.permission.ACCESS_BACKGROUND_LOCATION || true
 adb shell settings put secure location_mode 3 || true
@@ -85,8 +87,6 @@ step "wifi"
 adb shell svc wifi enable
 wait_for "connected to $SSID" 180 wifi_connected || fail "emulator Wi-Fi never connected to $SSID"
 adb shell cmd wifi status | head -5
-# Diagnostics only: can the device reach the host port at all?
-adb shell "nc -z -w 3 10.0.2.2 $PORT && echo 'host port reachable from device' || echo 'host port NOT reachable via default route'" || true
 
 step "configure app"
 cat > "$OUT/prefs-in.xml" <<XML
