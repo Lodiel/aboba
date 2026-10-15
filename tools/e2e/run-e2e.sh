@@ -40,9 +40,8 @@ dump() {
   adb shell dumpsys activity services "$PKG" > "$OUT/services.txt" 2>&1 || true
   adb shell run-as "$PKG" cat shared_prefs/starlink_reconnect.xml > "$OUT/prefs.xml" 2>&1 || true
   adb logcat -d -v threadtime > "$OUT/logcat-dump.txt" 2>/dev/null || true
-  cat "$STREAM" "$OUT/logcat-dump.txt" 2>/dev/null \
-    | grep -E "ReconnectService|StarlinkCommands|WifiReconnector|AndroidRuntime|FATAL|E2E" \
-    | sort -u -k1,2 > "$OUT/logcat-app.txt" || true
+  grep -E "ReconnectService|StarlinkCommands|WifiReconnector|AndroidRuntime|FATAL|E2E|ANR in" \
+    "$OUT/logcat-dump.txt" > "$OUT/logcat-app.txt" 2>/dev/null || true
   adb exec-out screencap -p > "$OUT/screen.png" 2>/dev/null || true
 }
 

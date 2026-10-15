@@ -362,6 +362,13 @@ public class ReconnectService extends Service {
         }
 
         if (!reconnector.isWifiEnabled()) {
+            if (wasConnected) {
+                // Wi-Fi off means not connected: without this the next connection would not count
+                // as a transition (whether it did depended on which broadcast arrived first).
+                Log.i(TAG, "disconnected from " + ssid + " (Wi-Fi turned off)");
+                wasConnected = false;
+                cancelPendingReboot();
+            }
             reconnector.enableWifi();
             update(getString(R.string.status_wifi_off));
             scheduleTick(5_000);
