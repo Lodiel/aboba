@@ -78,4 +78,5 @@
     <string name="status_reboot_waiting_network">Connected to %1$s, waiting for the Wi-Fi network to come up before rebooting…</string>
     <string name="status_reboot_backoff">Reboot attempts keep failing; pausing automatic reboots for %1$d min.</string>
     <string name="status_needs_foreground">Started in the background: Android hides Wi-Fi scan results until you open the app once (or allow location “all the time”).</string>
+    <string name="status_reboot_retry">Reboot not accepted, retrying in %1$d s…</string>
 </resources>

@@ -50,6 +50,7 @@ public class ReconnectService extends Service {
     public static final String ACTION_RECONNECT_NOW = "com.aboba.starlinkreconnect.RECONNECT_NOW";
     public static final String ACTION_REBOOT_STARLINK_NOW = "com.aboba.starlinkreconnect.REBOOT_STARLINK_NOW";
     static final String EXTRA_FROM_BACKGROUND = "from_background";
+    static final String EXTRA_AT_BOOT = "at_boot";
 
     static final String CHANNEL_SERVICE = "watchdog";
     static final String CHANNEL_EVENTS = "events";
@@ -66,6 +67,11 @@ public class ReconnectService extends Service {
     private static final long MIN_REBOOT_ATTEMPT_GAP_MS = 2 * 60_000L;
     /** After this many failed automatic attempts in a row, pause for the full cooldown. */
     private static final int REBOOT_FAILURE_BACKOFF_AFTER = 3;
+    /**
+     * When started at phone boot, a connection established this soon after boot is the system
+     * auto-joining a network the phone was already in range of, not the network appearing.
+     */
+    private static final long BOOT_BASELINE_WINDOW_MS = 3 * 60_000L;
     private static final int REBOOT_WAIT_NETWORK_TRIES = 10; // x 3 s
 
     /** Whether any instance is alive; for the activity's display logic only. */
@@ -99,6 +105,9 @@ public class ReconnectService extends Service {
     private boolean rebootInFlight;
     private boolean legacyBlocked;
     private boolean startedFromBackground;
+    private boolean startedAtBoot;
+    private boolean bootBaselineDone;
+    private boolean rebootManual;
     private int rebootWaitNetworkTries;
     private int consecutiveConnectFailures;
     private long lastAttempt;
@@ -113,9 +122,22 @@ public class ReconnectService extends Service {
         send(context, ACTION_START, false);
     }
 
-    /** Start from a receiver (boot / package replaced): no visible activity is involved. */
+    /** Start from a receiver (package replaced): no visible activity is involved. */
     public static void startFromBackground(Context context) {
         send(context, ACTION_START, true);
+    }
+
+    /** Start from BOOT_COMPLETED. */
+    public static void startAtBoot(Context context) {
+        Context app = context.getApplicationContext();
+        Intent i = new Intent(app, ReconnectService.class).setAction(ACTION_START)
+                .putExtra(EXTRA_FROM_BACKGROUND, true)
+                .putExtra(EXTRA_AT_BOOT, true);
+        try {
+            app.startForegroundService(i);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "startForegroundService failed", e);
+        }
     }
 
     public static void stop(Context context) {
@@ -196,6 +218,9 @@ public class ReconnectService extends Service {
         startForeground(NOTIF_ID, buildNotification(
                 lastNotificationText != null ? lastNotificationText : getString(R.string.status_starting)));
         String action = intent == null ? null : intent.getAction();
+        if (intent != null && intent.getBooleanExtra(EXTRA_AT_BOOT, false)) {
+            startedAtBoot = true;
+        }
         if (intent != null && intent.hasExtra(EXTRA_FROM_BACKGROUND)) {
             boolean background = intent.getBooleanExtra(EXTRA_FROM_BACKGROUND, false);
             if (background) {
@@ -363,11 +388,20 @@ public class ReconnectService extends Service {
 
         if (linkUp) {
             if (!wasConnected) {
-                Log.i(TAG, "connected to " + ssid + " (transition)");
                 wasConnected = true;
                 attempts = 0;
                 consecutiveConnectFailures = 0;
-                onConnected(ssid);
+                boolean bootAutoJoin = startedAtBoot && !bootBaselineDone
+                        && SystemClock.elapsedRealtime() < BOOT_BASELINE_WINDOW_MS;
+                bootBaselineDone = true;
+                if (bootAutoJoin) {
+                    // The phone just booted inside the network's range: same as an app restart
+                    // while connected, this is not "the network appeared".
+                    Log.i(TAG, "connected to " + ssid + " right after phone boot: baseline, no reboot");
+                } else {
+                    Log.i(TAG, "connected to " + ssid + " (transition)");
+                    onConnected(ssid);
+                }
             }
             if (rebootInFlight) {
                 update(getString(R.string.status_reboot_sending));
@@ -534,6 +568,7 @@ public class ReconnectService extends Service {
     private void startReboot(boolean manual) {
         if (rebootInFlight) return;
         rebootInFlight = true;
+        rebootManual = manual;
         update(getString(R.string.status_reboot_sending));
         StatusBus.postReboot(getString(R.string.status_reboot_sending));
         StarlinkCommands.reboot(this, currentWifiNetwork(), new StarlinkCommands.Callback() {
@@ -553,6 +588,7 @@ public class ReconnectService extends Service {
         int failures = anyOk ? 0 : Prefs.consecutiveRebootFailures(this) + 1;
         Prefs.setConsecutiveRebootFailures(this, failures);
         String stamp = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "\n" + text;
+        boolean backedOff = false;
         if (anyOk) {
             Prefs.markRebootSent(this);
         } else if (failures >= REBOOT_FAILURE_BACKOFF_AFTER) {
@@ -560,12 +596,24 @@ public class ReconnectService extends Service {
             Prefs.markRebootSent(this);
             Prefs.setConsecutiveRebootFailures(this, 0);
             stamp += "\n" + getString(R.string.status_reboot_backoff, Prefs.rebootCooldownMin(this));
+            backedOff = true;
         }
         Prefs.setLastRebootResult(this, stamp);
         StatusBus.postReboot(stamp);
         if (destroyed) return;
         rebootInFlight = false;
         notifyRebootResult(anyOk, text);
+        if (!anyOk && !backedOff && !rebootManual && wasConnected && !rebootPending) {
+            // Still on the network but the dish did not take the command (e.g. still booting):
+            // try again later instead of silently giving up until the next reconnect.
+            rebootPending = true;
+            rebootWaitNetworkTries = 0;
+            Log.i(TAG, "reboot failed (" + failures + " in a row), retrying in "
+                    + MIN_REBOOT_ATTEMPT_GAP_MS + " ms");
+            update(getString(R.string.status_reboot_retry, MIN_REBOOT_ATTEMPT_GAP_MS / 1000L));
+            handler.removeCallbacks(rebootRunnable);
+            handler.postDelayed(rebootRunnable, MIN_REBOOT_ATTEMPT_GAP_MS);
+        }
         scheduleTick(0);
     }
 

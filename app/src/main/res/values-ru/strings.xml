@@ -78,4 +78,5 @@
     <string name="status_reboot_waiting_network">Подключено к %1$s, жду, пока поднимется Wi-Fi сеть, перед перезагрузкой…</string>
     <string name="status_reboot_backoff">Попытки перезагрузки не удаются; автоперезагрузка приостановлена на %1$d мин.</string>
     <string name="status_needs_foreground">Запущено в фоне: Android скрывает результаты сканирования Wi-Fi, пока вы не откроете приложение (или не разрешите геолокацию «всегда»).</string>
+    <string name="status_reboot_retry">Перезагрузка не прошла, повтор через %1$d с…</string>
 </resources>

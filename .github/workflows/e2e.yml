@@ -10,11 +10,11 @@ on:
 jobs:
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        api-level: [33, 34]
+        api-level: [30, 33, 34, 35, 36]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

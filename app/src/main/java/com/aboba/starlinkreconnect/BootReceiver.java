@@ -14,7 +14,10 @@ public class BootReceiver extends BroadcastReceiver {
                 && !Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)) {
             return;
         }
-        if (Prefs.enabled(context)) {
+        if (!Prefs.enabled(context)) return;
+        if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
+            ReconnectService.startAtBoot(context);
+        } else {
             ReconnectService.startFromBackground(context);
         }
     }
