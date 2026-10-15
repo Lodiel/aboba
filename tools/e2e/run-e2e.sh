@@ -218,14 +218,17 @@ wait_for "service seeded" 60 log_has "$m" "seeded: ssid=$SSID linkUp=true" || fa
 expect_reboots "$n" 20 "dish was rebooted after app restart while connected"
 pass C
 
-step "D. phone in pocket: app in background, screen off, Doze -> reboot"
+# Light Doze is what a phone in a pocket / bag gets: screen off, not charging, but moving. Deep
+# Doze needs ~30+ min lying still; in forced deep Doze Android 15/16 do not even reconnect Wi-Fi
+# when told to from the shell, so it is not something an app can work around.
+step "D. phone in pocket: app in background, screen off, light Doze -> reboot"
 reset_app 0
 n=$(reboots)
 adb shell input keyevent KEYCODE_HOME
 adb shell dumpsys battery unplug
 adb shell input keyevent KEYCODE_SLEEP
 sleep 2
-adb shell dumpsys deviceidle force-idle || true
+adb shell dumpsys deviceidle force-idle light || true
 flap 6
 wait_for "dish received reboot in Doze" 150 reboots_at_least $((n + 1)) \
   || { adb shell dumpsys deviceidle unforce; adb shell dumpsys battery reset; fail "no reboot with the app in background / Doze"; }
