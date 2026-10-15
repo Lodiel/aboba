@@ -39,8 +39,10 @@ dump() {
   adb shell dumpsys connectivity > "$OUT/connectivity.txt" 2>&1 || true
   adb shell dumpsys activity services "$PKG" > "$OUT/services.txt" 2>&1 || true
   adb shell run-as "$PKG" cat shared_prefs/starlink_reconnect.xml > "$OUT/prefs.xml" 2>&1 || true
-  grep -E "ReconnectService|StarlinkCommands|WifiReconnector|AndroidRuntime|FATAL|$PKG" "$STREAM" \
-    > "$OUT/logcat-app.txt" 2>/dev/null || true
+  adb logcat -d -v threadtime > "$OUT/logcat-dump.txt" 2>/dev/null || true
+  cat "$STREAM" "$OUT/logcat-dump.txt" 2>/dev/null \
+    | grep -E "ReconnectService|StarlinkCommands|WifiReconnector|AndroidRuntime|FATAL|E2E" \
+    | sort -u -k1,2 > "$OUT/logcat-app.txt" || true
   adb exec-out screencap -p > "$OUT/screen.png" 2>/dev/null || true
 }
 
@@ -77,10 +79,26 @@ wifi_connected() {
 }
 reboots_at_least() { [ "$(reboots)" -ge "$1" ]; }
 
-# Lines of the app log added after a mark (mark = line count of the stream file).
-mark() { wc -l < "$STREAM" | tr -d ' '; }
-log_since() { tail -n +"$(( $1 + 1 ))" "$STREAM"; }
+# Log positions: mark() writes a unique marker line into logcat and prints its id;
+# log_since <id> prints the current logcat dump from that marker on ("all" = whole buffer, e.g.
+# after a phone reboot). Reading `logcat -d` avoids adb's output buffering when streaming to a file.
+mark() {
+  local id="mark-$SECONDS-$RANDOM"
+  adb shell log -t E2E "$id" >/dev/null 2>&1
+  echo "$id"
+}
+app_log() {
+  adb logcat -d -v threadtime -s E2E:I ReconnectService:V StarlinkCommands:V WifiReconnector:V 2>/dev/null
+}
+log_since() {
+  if [ "$1" = all ]; then
+    app_log
+  else
+    app_log | awk -v id="$1" 'f {print} index($0, "E2E") && index($0, id) {f = 1}'
+  fi
+}
 log_has() { log_since "$1" | grep -q "$2"; }
+log_count() { log_since "$1" | grep -c "$2" || true; }
 
 start_logcat() {
   adb logcat -v threadtime >> "$STREAM" 2>/dev/null &
@@ -240,7 +258,8 @@ flap 6
 wait_for "first reboot" 120 reboots_at_least $((n + 1)) || fail "no first reboot"
 wait_for "app recorded success" 60 log_has "$m" "reboot finished: anyOk=true" || fail "app did not record success"
 flap 20
-wait_for "app saw the reconnect" 60 sh -c "[ \$(tail -n +$((m + 1)) '$STREAM' | grep -c 'connected to $SSID (transition)') -ge 2 ]" \
+saw_two_connects() { [ "$(log_count "$m" "connected to $SSID (transition)")" -ge 2 ]; }
+wait_for "app saw the reconnect" 60 saw_two_connects \
   || fail "app did not notice the second connection"
 expect_reboots $((n + 1)) 20 "rebooted again within the cooldown (reboot loop)"
 log_has "$m" "reboot skipped: cooldown" || fail "cooldown was not the reason for skipping"
@@ -264,18 +283,17 @@ pid=$(adb shell pidof "$PKG" | tr -d '\r')
 n=$(reboots)
 kill "$LOGCAT_PID" 2>/dev/null; LOGCAT_PID=
 echo "----- phone reboot -----" >> "$STREAM"
-m=$(mark)
 adb reboot
 timeout 90 adb wait-for-disconnect 2>/dev/null || sleep 15
 wait_boot
 start_logcat
 wait_for "Wi-Fi on $SSID after boot" 180 wifi_connected || fail "Wi-Fi did not connect after boot"
-wait_for "service started by BootReceiver" 120 log_has "$m" "ReconnectService: seeded:" \
+wait_for "service started by BootReceiver" 120 log_has all "ReconnectService: seeded:" \
   || fail "service was not started at boot"
 sleep 30
 got=$(reboots)
 [ "$got" -eq "$n" ] || fail "dish was rebooted because the phone rebooted (got $got, expected $n)"
-log_since "$m" | grep -E "ReconnectService: (seeded|connected)" | head -3 | sed 's/^/    /'
+log_since all | grep -E "ReconnectService: (seeded|connected)" | head -3 | sed 's/^/    /'
 m=$(mark)
 flap 6
 wait_for "dish received reboot after boot" 120 reboots_at_least $((n + 1)) || fail "no reboot after reconnect following boot"
