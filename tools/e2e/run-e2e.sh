@@ -40,8 +40,8 @@ dump() {
   adb shell dumpsys activity services "$PKG" > "$OUT/services.txt" 2>&1 || true
   adb shell run-as "$PKG" cat shared_prefs/starlink_reconnect.xml > "$OUT/prefs.xml" 2>&1 || true
   adb logcat -d -v threadtime > "$OUT/logcat-dump.txt" 2>/dev/null || true
-  grep -E "ReconnectService|StarlinkCommands|WifiReconnector|AndroidRuntime|FATAL|E2E|ANR in" \
-    "$OUT/logcat-dump.txt" > "$OUT/logcat-app.txt" 2>/dev/null || true
+  grep -E "ReconnectService|StarlinkCommands|WifiReconnector|FATAL EXCEPTION|E2E|ANR in|$PKG" \
+    "$OUT/logcat-dump.txt" | grep -v "VM exiting" > "$OUT/logcat-app.txt" 2>/dev/null || true
   adb exec-out screencap -p > "$OUT/screen.png" 2>/dev/null || true
 }
 
@@ -50,7 +50,9 @@ fail() {
   echo "E2E FAILED: $*"
   dump
   echo "--- app log (last 60 lines):"
-  tail -n 60 "$OUT/logcat-app.txt" || true
+  app_log | tail -n 60 || true
+  echo "--- crashes / ANRs:"
+  grep -E "FATAL EXCEPTION|ANR in $PKG" -A 12 "$OUT/logcat-dump.txt" | head -40 || true
   echo "--- fake dish:"
   tail -n 20 "$OUT/fake_dish.out" || true
   echo "--- passed before the failure: ${PASSED[*]:-none}"

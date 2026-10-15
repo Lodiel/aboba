@@ -385,6 +385,9 @@ public class ReconnectService extends Service {
             // on every app update, phone reboot or process restart).
             seeded = true;
             wasConnected = linkUp;
+            // Already connected when the service starts: that connection is the baseline, so the
+            // boot-time auto-join exemption has been used up.
+            if (linkUp) bootBaselineDone = true;
             Log.i(TAG, "seeded: ssid=" + current + " linkUp=" + linkUp + " (no reboot for the initial state)");
             if (linkUp) {
                 update(getString(R.string.status_connected, ssid));
